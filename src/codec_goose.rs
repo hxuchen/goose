@@ -1,10 +1,11 @@
+use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use reqwest::Client;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use url::Url;
-use crate::goose::{GOOSE_REQUEST_TIMEOUT, GooseRequestCadence, GooseUserData};
+use crate::goose::{GOOSE_REQUEST_TIMEOUT, GooseRequestCadence, GooseUserData, TransactionError};
 use crate::{GooseConfiguration, GooseError, GooseMetric, GooseUser};
 use crate::logger::GooseLog;
 
@@ -49,9 +50,6 @@ pub struct CodecGooseUser<S, Item, U>
     pub(crate) slept: u64,
     /// Current transaction name.
     pub(crate) transaction_name: Option<String>,
-    /// Optional per-user session data of a generic type implementing the
-    /// [`GooseUserData`] trait.
-    session_data: Option<Box<dyn GooseUserData>>,
 }
 
 impl<S, Item, U> CodecGooseUser<S, Item, U>
@@ -99,7 +97,30 @@ impl<S, Item, U> CodecGooseUser<S, Item, U>
             request_cadence: GooseRequestCadence::new(),
             slept: 0,
             transaction_name: None,
-            session_data: None,
         })
+    }
+
+    /// Create a new single-use user.
+    pub fn single(base_url: Url, configuration: &GooseConfiguration, inner: S, codec: U) -> Result<Self, GooseError> {
+        let mut single_user = CodecGooseUser::new(0, base_url, configuration, 0, inner, codec)?;
+        // Only one user, so index is 0.
+        single_user.weighted_users_index = 0;
+        // Do not throttle [`test_start`](../struct.GooseAttack.html#method.test_start) (setup) and
+        // [`test_stop`](../struct.GooseAttack.html#method.test_stop) (teardown) transactions.
+        single_user.is_throttled = false;
+
+        Ok(single_user)
+    }
+
+    pub fn build_url(&self, path: &str) -> Result<String, TransactionError> {
+        // If URL includes a host, simply use it.
+        if let Ok(parsed_path) = Url::parse(path) {
+            if let Some(_host) = parsed_path.host() {
+                return Ok(path.to_string());
+            }
+        }
+
+        // Otherwise use the `base_url`.
+        Ok(self.base_url.join(path)?.to_string())
     }
 }

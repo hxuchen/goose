@@ -295,7 +295,7 @@ use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
-use std::{fmt, str};
+use std::{fmt, io, str};
 use std::{future::Future, pin::Pin, time::Instant};
 use tokio::sync::RwLock;
 use url::Url;
@@ -305,6 +305,7 @@ use crate::metrics::{
     GooseCoordinatedOmissionMitigation, GooseMetric, GooseRawRequest, GooseRequestMetric,
 };
 use crate::{GooseConfiguration, GooseError, WeightedTransactions};
+use crate::codec_goose::CodecGooseError;
 
 /// By default Goose sets the following User-Agent header when making requests.
 static APP_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
@@ -339,6 +340,7 @@ pub type TransactionResult = Result<(), TransactionError>;
 pub enum TransactionError {
     /// Wraps a [`reqwest::Error`](https://docs.rs/reqwest/*/reqwest/struct.Error.html).
     Reqwest(reqwest::Error),
+    Codec(io::Error),
     /// Wraps a [`url::ParseError`](https://docs.rs/url/*/url/enum.ParseError.html).
     Url(url::ParseError),
     /// The request failed.
@@ -371,10 +373,12 @@ pub enum TransactionError {
         method: Method,
     },
 }
+
 /// Implement a helper to provide a text description of all possible types of errors.
 impl TransactionError {
     fn describe(&self) -> &str {
         match *self {
+            TransactionError::Codec(_) => "codec::Error",
             TransactionError::Reqwest(_) => "reqwest::Error",
             TransactionError::Url(_) => "url::ParseError",
             TransactionError::RequestFailed { .. } => "request failed",
@@ -393,6 +397,9 @@ impl fmt::Display for TransactionError {
     // Implement display of error with `{}` marker.
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
+            TransactionError::Codec(ref source) => {
+                write!(f, "TransactionError: {} ({})", self.describe(), source)
+            }
             TransactionError::Reqwest(ref source) => {
                 write!(f, "TransactionError: {} ({})", self.describe(), source)
             }
@@ -498,6 +505,7 @@ pub struct Scenario {
     /// An optional default host to run this `Scenario` against.
     pub host: Option<String>,
 }
+
 impl Scenario {
     /// Creates a new [`Scenario`](./struct.Scenario.html). Once created, a
     /// [`Transaction`](./struct.Transaction.html) must be assigned to it, and finally it must
@@ -640,8 +648,8 @@ impl Scenario {
                 min_wait,
                 max_wait,
                 detail:
-                    "The min_wait option can not be set to a larger value than the max_wait option."
-                        .to_string(),
+                "The min_wait option can not be set to a larger value than the max_wait option."
+                    .to_string(),
             });
         }
         self.transaction_wait = Some((min_wait, max_wait));
@@ -672,6 +680,7 @@ pub enum GooseMethod {
     Post,
     Put,
 }
+
 /// Display method in upper case.
 impl fmt::Display for GooseMethod {
     // Implement display of `GooseMethod` with `{}` marker.
@@ -711,6 +720,7 @@ pub struct GooseResponse {
     /// The response.
     pub response: Result<Response, reqwest::Error>,
 }
+
 impl GooseResponse {
     pub fn new(request: GooseRequestMetric, response: Result<Response, reqwest::Error>) -> Self {
         GooseResponse { request, response }
@@ -730,6 +740,7 @@ pub struct GooseDebug {
     /// Optional body text returned by server.
     pub body: Option<String>,
 }
+
 impl GooseDebug {
     fn new(
         tag: &str,
@@ -763,6 +774,7 @@ pub struct GaggleUser {
     /// Load test hash.
     pub load_test_hash: u64,
 }
+
 impl GaggleUser {
     /// Create a new user state.
     pub fn new(
@@ -809,6 +821,7 @@ pub struct GooseRequestCadence {
     /// many times the mitigation triggered.
     coordinated_omission_counter: isize,
 }
+
 impl GooseRequestCadence {
     // Return a new, empty RequestCadence object.
     pub fn new() -> GooseRequestCadence {
@@ -891,6 +904,7 @@ pub struct GooseUser {
     /// [`GooseUserData`] trait.
     session_data: Option<Box<dyn GooseUserData>>,
 }
+
 impl GooseUser {
     /// Create a new user state.
     pub fn new(
@@ -1521,7 +1535,7 @@ impl GooseUser {
         // If the RequestBuilder is already defined in the GooseRequest use it.
         let request_builder = if request.request_builder.is_some() {
             request.request_builder.take().unwrap()
-        // Otherwise get a new RequestBuilder.
+            // Otherwise get a new RequestBuilder.
         } else {
             self.get_request_builder(&request.method, request.path)?
         };
@@ -1610,7 +1624,7 @@ impl GooseUser {
                         request_metric.success = false;
                         request_metric.error = format!("{}: {}", status_code, request_name);
                     }
-                // Otherwise record a failure if the returned status code was not a success.
+                    // Otherwise record a failure if the returned status code was not a success.
                 } else if !status_code.is_success() {
                     request_metric.success = false;
                     request_metric.error = format!("{}: {}", status_code, request_name);
@@ -1696,7 +1710,7 @@ impl GooseUser {
                 || self.request_cadence.minimum_cadence == 0
             {
                 self.request_cadence.minimum_cadence = elapsed;
-            // Update `maximum_cadence` if this was the slowest seen.
+                // Update `maximum_cadence` if this was the slowest seen.
             } else if elapsed > self.request_cadence.maximum_cadence {
                 self.request_cadence.maximum_cadence = elapsed;
             }
@@ -2017,7 +2031,7 @@ impl GooseUser {
     ///                             Some(headers),
     ///                             Some(&html),
     ///                         );
-    ///                     },
+    ///                     }
     ///                     Err(e) => {
     ///                         // No body was returned, log everything else.
     ///                         user.log_debug(
@@ -2029,7 +2043,7 @@ impl GooseUser {
     ///                     }
     ///                 }
     ///             }
-    ///         },
+    ///         }
     ///         // No response from server.
     ///         Err(e) => {
     ///             user.log_debug(
@@ -2322,6 +2336,7 @@ pub struct GooseRequest<'a> {
     // Defaults to [`None`].
     request_builder: Option<RequestBuilder>,
 }
+
 impl<'a> GooseRequest<'a> {
     /// Convenience function to bring [`GooseRequestBuilder`] into scope.
     pub fn builder() -> GooseRequestBuilder<'a> {
@@ -2366,6 +2381,7 @@ pub struct GooseRequestBuilder<'a> {
     error_on_fail: bool,
     request_builder: Option<RequestBuilder>,
 }
+
 impl<'a> GooseRequestBuilder<'a> {
     // Internal method to build a [`GooseRequest`] from a [`GooseRequestBuilder`].
     fn new() -> Self {
@@ -2693,10 +2709,10 @@ pub fn get_base_url(
 /// The function type of a goose transaction function.
 pub type TransactionFunction = Arc<
     dyn for<'r> Fn(
-            &'r mut GooseUser,
-        ) -> Pin<Box<dyn Future<Output = TransactionResult> + Send + 'r>>
-        + Send
-        + Sync,
+        &'r mut GooseUser,
+    ) -> Pin<Box<dyn Future<Output=TransactionResult> + Send + 'r>>
+    + Send
+    + Sync,
 >;
 
 /// An individual transaction within a [`Scenario`](./struct.Scenario.html).
@@ -2719,6 +2735,7 @@ pub struct Transaction {
     /// A required function that is executed each time this transaction runs.
     pub function: TransactionFunction,
 }
+
 impl Transaction {
     pub fn new(function: TransactionFunction) -> Self {
         trace!("new transaction");
@@ -2946,6 +2963,7 @@ impl Transaction {
         self
     }
 }
+
 impl Hash for Transaction {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.transactions_index.hash(state);
@@ -3190,7 +3208,7 @@ mod tests {
             Some("http://www2.example.com/".to_string()),
             Some("http://www.example.com/".to_string()),
         )
-        .unwrap();
+            .unwrap();
         let user2 = GooseUser::new(0, base_url, &configuration, 0).unwrap();
 
         // Confirm the URLs are correctly built using the scenario_host.
@@ -3266,7 +3284,7 @@ mod tests {
         assert_eq!(goose.request.name, NO_SUCH_PATH);
         assert!(!goose.request.success);
         assert!(!goose.request.update);
-        assert_eq!(goose.request.status_code, 404,);
+        assert_eq!(goose.request.status_code, 404, );
         not_found.assert_hits(1);
 
         // Set up a mock http server endpoint.
