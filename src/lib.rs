@@ -56,6 +56,7 @@ mod user;
 pub mod util;
 #[cfg(feature = "gaggle")]
 mod worker;
+pub mod codec_goose;
 
 use gumdrop::Options;
 use lazy_static::lazy_static;

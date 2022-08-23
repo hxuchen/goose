@@ -310,7 +310,7 @@ use crate::{GooseConfiguration, GooseError, WeightedTransactions};
 static APP_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
 /// By default Goose times out requests after 60,000 milliseconds.
-static GOOSE_REQUEST_TIMEOUT: u64 = 60_000;
+pub static GOOSE_REQUEST_TIMEOUT: u64 = 60_000;
 
 /// `transaction!(foo)` expands to `Transaction::new(foo)`, but also does some boxing to work around a limitation in the compiler.
 #[macro_export]
@@ -784,7 +784,7 @@ impl GaggleUser {
 /// Used internally by Coordinated Omission Mitigation, tracks the cadence between when the same request
 /// is made as Goose loops through a Scenario.
 #[derive(Debug, Clone)]
-struct GooseRequestCadence {
+pub struct GooseRequestCadence {
     /// The last time this GooseUser lopped through its Transactions.
     last_time: std::time::Instant,
     /// Total milliseconds of delays followed each Transaction. This has to be substracted out as it's
@@ -811,7 +811,7 @@ struct GooseRequestCadence {
 }
 impl GooseRequestCadence {
     // Return a new, empty RequestCadence object.
-    fn new() -> GooseRequestCadence {
+    pub fn new() -> GooseRequestCadence {
         GooseRequestCadence {
             last_time: std::time::Instant::now(),
             delays_since_last_time: 0,
