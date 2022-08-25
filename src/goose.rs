@@ -297,6 +297,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{fmt, io, str};
 use std::{future::Future, pin::Pin, time::Instant};
+use http::HeaderMap;
 use tokio::sync::RwLock;
 use url::Url;
 
@@ -306,6 +307,7 @@ use crate::metrics::{
 };
 use crate::{GooseConfiguration, GooseError, WeightedTransactions};
 use crate::codec_goose::CodecGooseError;
+use crate::goose_trait::Goose;
 
 /// By default Goose sets the following User-Agent header when making requests.
 static APP_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
@@ -397,10 +399,10 @@ impl fmt::Display for TransactionError {
     // Implement display of error with `{}` marker.
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            TransactionError::Codec(ref source) => {
+            TransactionError::Reqwest(ref source) => {
                 write!(f, "TransactionError: {} ({})", self.describe(), source)
             }
-            TransactionError::Reqwest(ref source) => {
+            TransactionError::Codec(ref source) => {
                 write!(f, "TransactionError: {} ({})", self.describe(), source)
             }
             TransactionError::Url(ref source) => {
@@ -425,6 +427,7 @@ impl std::error::Error for TransactionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match *self {
             TransactionError::Reqwest(ref source) => Some(source),
+            TransactionError::Codec(ref source) => Some(source),
             TransactionError::Url(ref source) => Some(source),
             TransactionError::RequestCanceled { ref source } => Some(source),
             TransactionError::MetricsFailed { ref source } => Some(source),
@@ -903,6 +906,251 @@ pub struct GooseUser {
     /// Optional per-user session data of a generic type implementing the
     /// [`GooseUserData`] trait.
     session_data: Option<Box<dyn GooseUserData>>,
+}
+
+impl Goose for GooseUser {
+    fn send_request_metric_to_parent(
+        &self,
+        request_metric: GooseRequestMetric,
+    ) -> TransactionResult {
+        // If requests-file is enabled, send a copy of the raw request to the logger thread.
+        if !self.config.request_log.is_empty() {
+            if let Some(logger) = self.logger.as_ref() {
+                logger.send(Some(GooseLog::Request(request_metric.clone())))?;
+            }
+        }
+
+        // Parent is not defined when running
+        // [`test_start`](../struct.GooseAttack.html#method.test_start),
+        // [`test_stop`](../struct.GooseAttack.html#method.test_stop), and during testing.
+        if let Some(metrics_channel) = self.metrics_channel.clone() {
+            metrics_channel.send(GooseMetric::Request(request_metric))?;
+        }
+
+        Ok(())
+    }
+
+    /// Manually mark a request as a failure.
+    ///
+    /// By default, Goose will consider any response with a 2xx status code as a success.
+    /// You may require more advanced logic, in which a 2xx status code is actually a
+    /// failure. A copy of your original request is returned with the response, and a
+    /// mutable copy must be included when setting a request as a failure.
+    ///
+    /// Calls to `set_failure` must include four parameters. The first, `tag`, is an
+    /// arbitrary string identifying the reason for the failure, used when logging. The
+    /// second, `request`, is a mutable reference to the
+    /// ([`GooseRequestMetric`](./struct.GooseRequestMetric.html)) object of the request being
+    /// identified as a failure (the contained `success` field will be set to `false`,
+    /// and the `update` field will be set to `true`). The last two parameters, `header`
+    /// and `body`, are optional and used to provide more detail in logs.
+    ///
+    /// The value of `tag` will normally be collected into the errors summary table if
+    /// metrics are being displayed. However, if `set_failure` is called multiple times,
+    /// or is called on a request that was already an error, only the first error will
+    /// be collected.
+    ///
+    /// This also calls [`GooseUser::log_debug`].
+    ///
+    /// # Example
+    /// ```rust
+    /// use goose::prelude::*;
+    ///
+    /// let mut transaction = transaction!(loadtest_index_page);
+    ///
+    /// async fn loadtest_index_page(user: &mut GooseUser) -> TransactionResult {
+    ///     let mut goose = user.get("").await?;
+    ///
+    ///     if let Ok(response) = goose.response {
+    ///         // We only need to check pages that returned a success status code.
+    ///         if response.status().is_success() {
+    ///             match response.text().await {
+    ///                 Ok(text) => {
+    ///                     // If the expected string doesn't exist, this page load
+    ///                     // was a failure.
+    ///                     if !text.contains("this string must exist") {
+    ///                         // As this is a named request, pass in the name not the URL
+    ///                         return user.set_failure("string missing", &mut goose.request, None, None);
+    ///                     }
+    ///                 }
+    ///                 // Empty page, this is a failure.
+    ///                 Err(_) => {
+    ///                     return user.set_failure("empty page", &mut goose.request, None, None);
+    ///                 }
+    ///             }
+    ///         }
+    ///     };
+    ///
+    ///     Ok(())
+    /// }
+    /// ````
+    fn set_failure(
+        &self,
+        tag: &str,
+        request: &mut GooseRequestMetric,
+        headers: Option<&header::HeaderMap>,
+        body: Option<&str>,
+    ) -> TransactionResult {
+        // Only send update if this was previously a success.
+        if request.success {
+            request.success = false;
+            request.update = true;
+            request.error = tag.to_string();
+            self.send_request_metric_to_parent(request.clone())?;
+        }
+        // Write failure to log, converting `&mut request` to `&request` as needed by `log_debug()`.
+        self.log_debug(tag, Some(&*request), headers, body)?;
+
+        // Print log to stdout.
+        info!("set_failure: {}", tag);
+
+        Err(TransactionError::RequestFailed {
+            raw_request: request.clone(),
+        })
+    }
+
+    /// Manually mark a request as a success.
+    ///
+    /// Goose determines if a request was successful based on the the HTTP response status
+    /// code. By default, it uses [`reqwest::StatusCode::is_success`]. If an alternative
+    /// HTTP response code is expected, use [`GooseRequestBuilder::expect_status_code`]. If
+    /// validation requires additional logic, you can use set_success().
+    ///
+    /// A copy of your original request is returned with the response, and a mutable copy
+    /// must be included when setting a request as a success.
+    ///
+    /// # Example
+    /// ```rust
+    /// use goose::prelude::*;
+    ///
+    /// let mut transaction = transaction!(get_function);
+    ///
+    /// /// A simple transaction that makes a GET request.
+    /// async fn get_function(user: &mut GooseUser) -> TransactionResult {
+    ///     let mut goose = user.get("404").await?;
+    ///
+    ///     if let Ok(response) = &goose.response {
+    ///         // We expect a 404 here.
+    ///         if response.status() == 404 {
+    ///             return user.set_success(&mut goose.request);
+    ///         }
+    ///     }
+    ///
+    ///     Err(TransactionError::RequestFailed {
+    ///         raw_request: goose.request.clone(),
+    ///     })
+    /// }
+    /// ````
+    fn set_success(&self, request: &mut GooseRequestMetric) -> TransactionResult {
+        // Only send update if this was previously not a success.
+        if !request.success {
+            request.success = true;
+            request.update = true;
+            self.send_request_metric_to_parent(request.clone())?;
+        }
+
+        Ok(())
+    }
+
+    /// Write to [`debug_file`](../struct.GooseConfiguration.html#structfield.debug_file)
+    /// if enabled.
+    ///
+    /// This function provides a mechanism for optional debug logging when a load test
+    /// is running. This can be especially helpful when writing a load test. Each entry
+    /// must include a tag, which is an arbitrary string identifying the debug message.
+    /// It may also optionally include references to the GooseRequestMetric made, the headers
+    /// returned by the server, and the response body returned by the server,
+    ///
+    /// As the response body can be large, the `--no-debug-body` option (or
+    /// [`GooseDefault::NoDebugBody`](../config/enum.GooseDefault.html#variant.NoDebugBody) default)
+    /// can be set to prevent the debug log from including the response body. When this option
+    /// is enabled, the body will always show up as `null` in the debug log.
+    ///
+    /// Calls to [`GooseUser::set_failure`] automatically invoke `log_debug`.
+    ///
+    /// To enable the debug log, a load test must be run with the `--debug-log-file=foo`
+    /// option set, where `foo` is either a relative or an absolute path of the log file
+    /// to create. Any existing file will be overwritten.
+    ///
+    /// In the following example, we are logging debug messages whenever there are errors.
+    ///
+    /// # Example
+    /// ```rust
+    /// use goose::prelude::*;
+    ///
+    /// let mut transaction = transaction!(loadtest_index_page);
+    ///
+    /// async fn loadtest_index_page(user: &mut GooseUser) -> TransactionResult {
+    ///     let mut goose = user.get("").await?;
+    ///
+    ///     match goose.response {
+    ///         Ok(response) => {
+    ///             // Grab a copy of the headers so we can include them when logging errors.
+    ///             let headers = &response.headers().clone();
+    ///             // We only need to check pages that returned a success status code.
+    ///             if !response.status().is_success() {
+    ///                 match response.text().await {
+    ///                     Ok(html) => {
+    ///                         // Server returned an error code, log everything.
+    ///                         user.log_debug(
+    ///                             "error loading /",
+    ///                             Some(&goose.request),
+    ///                             Some(headers),
+    ///                             Some(&html),
+    ///                         );
+    ///                     }
+    ///                     Err(e) => {
+    ///                         // No body was returned, log everything else.
+    ///                         user.log_debug(
+    ///                             &format!("error loading /: {}", e),
+    ///                             Some(&goose.request),
+    ///                             Some(headers),
+    ///                             None,
+    ///                         );
+    ///                     }
+    ///                 }
+    ///             }
+    ///         }
+    ///         // No response from server.
+    ///         Err(e) => {
+    ///             user.log_debug(
+    ///                 "no response from server when loading /",
+    ///                 Some(&goose.request),
+    ///                 None,
+    ///                 None,
+    ///             );
+    ///         }
+    ///     }
+    ///
+    ///     Ok(())
+    /// }
+    /// ````
+    fn log_debug(
+        &self,
+        tag: &str,
+        request: Option<&GooseRequestMetric>,
+        headers: Option<&header::HeaderMap>,
+        body: Option<&str>,
+    ) -> TransactionResult {
+        if !self.config.debug_log.is_empty() {
+            // Logger is not defined when running
+            // [`test_start`](../struct.GooseAttack.html#method.test_start),
+            // [`test_stop`](../struct.GooseAttack.html#method.test_stop), and during testing.
+            if let Some(logger) = self.logger.clone() {
+                if self.config.no_debug_body {
+                    logger.send(Some(GooseLog::Debug(GooseDebug::new(
+                        tag, request, headers, None,
+                    ))))?;
+                } else {
+                    logger.send(Some(GooseLog::Debug(GooseDebug::new(
+                        tag, request, headers, body,
+                    ))))?;
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl GooseUser {
@@ -1824,27 +2072,6 @@ impl GooseUser {
         }
     }
 
-    fn send_request_metric_to_parent(
-        &self,
-        request_metric: GooseRequestMetric,
-    ) -> TransactionResult {
-        // If requests-file is enabled, send a copy of the raw request to the logger thread.
-        if !self.config.request_log.is_empty() {
-            if let Some(logger) = self.logger.as_ref() {
-                logger.send(Some(GooseLog::Request(request_metric.clone())))?;
-            }
-        }
-
-        // Parent is not defined when running
-        // [`test_start`](../struct.GooseAttack.html#method.test_start),
-        // [`test_stop`](../struct.GooseAttack.html#method.test_stop), and during testing.
-        if let Some(metrics_channel) = self.metrics_channel.clone() {
-            metrics_channel.send(GooseMetric::Request(request_metric))?;
-        }
-
-        Ok(())
-    }
-
     /// If `request_name` is set, unwrap and use this. Otherwise, if the Transaction has a name
     /// set use it. Otherwise use the path.
     fn get_request_name<'a>(&'a self, request: &'a GooseRequest) -> &'a str {
@@ -1861,228 +2088,6 @@ impl GooseUser {
                 }
             }
         }
-    }
-
-    /// Manually mark a request as a success.
-    ///
-    /// Goose determines if a request was successful based on the the HTTP response status
-    /// code. By default, it uses [`reqwest::StatusCode::is_success`]. If an alternative
-    /// HTTP response code is expected, use [`GooseRequestBuilder::expect_status_code`]. If
-    /// validation requires additional logic, you can use set_success().
-    ///
-    /// A copy of your original request is returned with the response, and a mutable copy
-    /// must be included when setting a request as a success.
-    ///
-    /// # Example
-    /// ```rust
-    /// use goose::prelude::*;
-    ///
-    /// let mut transaction = transaction!(get_function);
-    ///
-    /// /// A simple transaction that makes a GET request.
-    /// async fn get_function(user: &mut GooseUser) -> TransactionResult {
-    ///     let mut goose = user.get("404").await?;
-    ///
-    ///     if let Ok(response) = &goose.response {
-    ///         // We expect a 404 here.
-    ///         if response.status() == 404 {
-    ///             return user.set_success(&mut goose.request);
-    ///         }
-    ///     }
-    ///
-    ///     Err(TransactionError::RequestFailed {
-    ///         raw_request: goose.request.clone(),
-    ///     })
-    /// }
-    /// ````
-    pub fn set_success(&self, request: &mut GooseRequestMetric) -> TransactionResult {
-        // Only send update if this was previously not a success.
-        if !request.success {
-            request.success = true;
-            request.update = true;
-            self.send_request_metric_to_parent(request.clone())?;
-        }
-
-        Ok(())
-    }
-
-    /// Manually mark a request as a failure.
-    ///
-    /// By default, Goose will consider any response with a 2xx status code as a success.
-    /// You may require more advanced logic, in which a 2xx status code is actually a
-    /// failure. A copy of your original request is returned with the response, and a
-    /// mutable copy must be included when setting a request as a failure.
-    ///
-    /// Calls to `set_failure` must include four parameters. The first, `tag`, is an
-    /// arbitrary string identifying the reason for the failure, used when logging. The
-    /// second, `request`, is a mutable reference to the
-    /// ([`GooseRequestMetric`](./struct.GooseRequestMetric.html)) object of the request being
-    /// identified as a failure (the contained `success` field will be set to `false`,
-    /// and the `update` field will be set to `true`). The last two parameters, `header`
-    /// and `body`, are optional and used to provide more detail in logs.
-    ///
-    /// The value of `tag` will normally be collected into the errors summary table if
-    /// metrics are being displayed. However, if `set_failure` is called multiple times,
-    /// or is called on a request that was already an error, only the first error will
-    /// be collected.
-    ///
-    /// This also calls [`GooseUser::log_debug`].
-    ///
-    /// # Example
-    /// ```rust
-    /// use goose::prelude::*;
-    ///
-    /// let mut transaction = transaction!(loadtest_index_page);
-    ///
-    /// async fn loadtest_index_page(user: &mut GooseUser) -> TransactionResult {
-    ///     let mut goose = user.get("").await?;
-    ///
-    ///     if let Ok(response) = goose.response {
-    ///         // We only need to check pages that returned a success status code.
-    ///         if response.status().is_success() {
-    ///             match response.text().await {
-    ///                 Ok(text) => {
-    ///                     // If the expected string doesn't exist, this page load
-    ///                     // was a failure.
-    ///                     if !text.contains("this string must exist") {
-    ///                         // As this is a named request, pass in the name not the URL
-    ///                         return user.set_failure("string missing", &mut goose.request, None, None);
-    ///                     }
-    ///                 }
-    ///                 // Empty page, this is a failure.
-    ///                 Err(_) => {
-    ///                     return user.set_failure("empty page", &mut goose.request, None, None);
-    ///                 }
-    ///             }
-    ///         }
-    ///     };
-    ///
-    ///     Ok(())
-    /// }
-    /// ````
-    pub fn set_failure(
-        &self,
-        tag: &str,
-        request: &mut GooseRequestMetric,
-        headers: Option<&header::HeaderMap>,
-        body: Option<&str>,
-    ) -> TransactionResult {
-        // Only send update if this was previously a success.
-        if request.success {
-            request.success = false;
-            request.update = true;
-            request.error = tag.to_string();
-            self.send_request_metric_to_parent(request.clone())?;
-        }
-        // Write failure to log, converting `&mut request` to `&request` as needed by `log_debug()`.
-        self.log_debug(tag, Some(&*request), headers, body)?;
-
-        // Print log to stdout.
-        info!("set_failure: {}", tag);
-
-        Err(TransactionError::RequestFailed {
-            raw_request: request.clone(),
-        })
-    }
-
-    /// Write to [`debug_file`](../struct.GooseConfiguration.html#structfield.debug_file)
-    /// if enabled.
-    ///
-    /// This function provides a mechanism for optional debug logging when a load test
-    /// is running. This can be especially helpful when writing a load test. Each entry
-    /// must include a tag, which is an arbitrary string identifying the debug message.
-    /// It may also optionally include references to the GooseRequestMetric made, the headers
-    /// returned by the server, and the response body returned by the server,
-    ///
-    /// As the response body can be large, the `--no-debug-body` option (or
-    /// [`GooseDefault::NoDebugBody`](../config/enum.GooseDefault.html#variant.NoDebugBody) default)
-    /// can be set to prevent the debug log from including the response body. When this option
-    /// is enabled, the body will always show up as `null` in the debug log.
-    ///
-    /// Calls to [`GooseUser::set_failure`] automatically invoke `log_debug`.
-    ///
-    /// To enable the debug log, a load test must be run with the `--debug-log-file=foo`
-    /// option set, where `foo` is either a relative or an absolute path of the log file
-    /// to create. Any existing file will be overwritten.
-    ///
-    /// In the following example, we are logging debug messages whenever there are errors.
-    ///
-    /// # Example
-    /// ```rust
-    /// use goose::prelude::*;
-    ///
-    /// let mut transaction = transaction!(loadtest_index_page);
-    ///
-    /// async fn loadtest_index_page(user: &mut GooseUser) -> TransactionResult {
-    ///     let mut goose = user.get("").await?;
-    ///
-    ///     match goose.response {
-    ///         Ok(response) => {
-    ///             // Grab a copy of the headers so we can include them when logging errors.
-    ///             let headers = &response.headers().clone();
-    ///             // We only need to check pages that returned a success status code.
-    ///             if !response.status().is_success() {
-    ///                 match response.text().await {
-    ///                     Ok(html) => {
-    ///                         // Server returned an error code, log everything.
-    ///                         user.log_debug(
-    ///                             "error loading /",
-    ///                             Some(&goose.request),
-    ///                             Some(headers),
-    ///                             Some(&html),
-    ///                         );
-    ///                     }
-    ///                     Err(e) => {
-    ///                         // No body was returned, log everything else.
-    ///                         user.log_debug(
-    ///                             &format!("error loading /: {}", e),
-    ///                             Some(&goose.request),
-    ///                             Some(headers),
-    ///                             None,
-    ///                         );
-    ///                     }
-    ///                 }
-    ///             }
-    ///         }
-    ///         // No response from server.
-    ///         Err(e) => {
-    ///             user.log_debug(
-    ///                 "no response from server when loading /",
-    ///                 Some(&goose.request),
-    ///                 None,
-    ///                 None,
-    ///             );
-    ///         }
-    ///     }
-    ///
-    ///     Ok(())
-    /// }
-    /// ````
-    pub fn log_debug(
-        &self,
-        tag: &str,
-        request: Option<&GooseRequestMetric>,
-        headers: Option<&header::HeaderMap>,
-        body: Option<&str>,
-    ) -> TransactionResult {
-        if !self.config.debug_log.is_empty() {
-            // Logger is not defined when running
-            // [`test_start`](../struct.GooseAttack.html#method.test_start),
-            // [`test_stop`](../struct.GooseAttack.html#method.test_stop), and during testing.
-            if let Some(logger) = self.logger.clone() {
-                if self.config.no_debug_body {
-                    logger.send(Some(GooseLog::Debug(GooseDebug::new(
-                        tag, request, headers, None,
-                    ))))?;
-                } else {
-                    logger.send(Some(GooseLog::Debug(GooseDebug::new(
-                        tag, request, headers, body,
-                    ))))?;
-                }
-            }
-        }
-
-        Ok(())
     }
 
     /// Manually build a
