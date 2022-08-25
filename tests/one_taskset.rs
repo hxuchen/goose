@@ -142,14 +142,14 @@ fn validate_one_scenario(
 }
 
 // Returns the appropriate scenario needed to build these tests.
-fn get_transactions() -> Scenario {
+fn get_transactions<G: Goose>() -> Scenario<G> {
     scenario!("LoadTest")
         .register_transaction(transaction!(get_index).set_weight(9).unwrap())
         .register_transaction(transaction!(get_about).set_weight(3).unwrap())
 }
 
 // Helper to run all standalone tests.
-async fn run_standalone_test(test_type: TestType) {
+async fn run_standalone_test<G: Goose>(test_type: TestType) {
     // Start the mock server.
     let server = MockServer::start();
 
@@ -166,7 +166,7 @@ async fn run_standalone_test(test_type: TestType) {
 
     // Run the Goose Attack.
     let goose_metrics = common::run_load_test(
-        common::build_load_test(configuration.clone(), vec![get_transactions()], None, None),
+        common::build_load_test(configuration.clone(), vec![get_transactions::<G>()], None, None),
         None,
     )
     .await;
@@ -176,7 +176,7 @@ async fn run_standalone_test(test_type: TestType) {
 }
 
 // Helper to run all standalone tests.
-async fn run_gaggle_test(test_type: TestType) {
+async fn run_gaggle_test<G: Goose>(test_type: TestType) {
     // Start the mock server.
     let server = MockServer::start();
 
@@ -188,7 +188,7 @@ async fn run_gaggle_test(test_type: TestType) {
 
     // Workers launched in own threads, store thread handles.
     let worker_handles = common::launch_gaggle_workers(EXPECT_WORKERS, || {
-        common::build_load_test(
+        common::build_load_test::<G>(
             worker_configuration.clone(),
             vec![get_transactions()],
             None,
@@ -214,7 +214,7 @@ async fn run_gaggle_test(test_type: TestType) {
     };
 
     // Build the load test for the Manager.
-    let manager_goose_attack = common::build_load_test(
+    let manager_goose_attack = common::build_load_test::<G>(
         manager_configuration.clone(),
         vec![get_transactions()],
         None,

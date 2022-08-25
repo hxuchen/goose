@@ -1,12 +1,10 @@
-use std::io;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use reqwest::Client;
+use std::time::Instant;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use url::Url;
-use crate::goose::{GOOSE_REQUEST_TIMEOUT, GooseRequestCadence, GooseUserData, TransactionError};
-use crate::{GooseConfiguration, GooseError, GooseMetric, GooseUser};
+use crate::goose::{GOOSE_REQUEST_TIMEOUT, GooseRequestCadence, TransactionError};
+use crate::{GooseConfiguration, GooseError, GooseMetric};
 use crate::logger::GooseLog;
 
 pub struct CodecGooseUser<S, Item, U>
@@ -14,6 +12,7 @@ pub struct CodecGooseUser<S, Item, U>
     /// The Instant when this `GooseUser` client started.
     pub started: Instant,
     /// How many iterations of the scenario this GooseUser has run.
+    #[allow(dead_code)]
     pub(crate) iterations: usize,
     /// An index into the internal [`GooseAttack`](../struct.GooseAttack.html)`.scenarios`
     /// vector, indicating which [`Scenario`](./struct.Scenario.html) is running.
@@ -45,10 +44,13 @@ pub struct CodecGooseUser<S, Item, U>
     pub load_test_hash: u64,
     /// Tracks the cadence that this user is looping through all Transactions, used by Coordinated
     /// Omission Mitigation.
+    #[allow(dead_code)]
     request_cadence: GooseRequestCadence,
     /// Tracks how much time is spent sleeping during a loop through all transactions.
+    #[allow(dead_code)]
     pub(crate) slept: u64,
     /// Current transaction name.
+    #[allow(dead_code)]
     pub(crate) transaction_name: Option<String>,
 }
 

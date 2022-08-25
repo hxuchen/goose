@@ -99,7 +99,7 @@ fn setup_mock_server_endpoints(server: &MockServer) -> Vec<Mock> {
 }
 
 // Returns the appropriate scenario, start_transaction and stop_transaction needed to build these tests.
-fn get_transactions() -> Scenario {
+fn get_transactions<G>() -> Scenario<G> {
     scenario!("LoadTest")
         .register_transaction(transaction!(get_index))
         .register_transaction(transaction!(get_error))

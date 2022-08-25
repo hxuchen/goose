@@ -295,7 +295,7 @@ fn validate_test(is_builder: bool, mock_endpoints: &[Mock], goose_metrics: Goose
 }
 
 // Returns the appropriate scenario needed to build these tests.
-fn get_transactions(is_builder: bool) -> Scenario {
+fn get_transactions<G: Goose>(is_builder: bool) -> Scenario<G> {
     if is_builder {
         scenario!("LoadTest")
             .register_transaction(transaction!(get_builder))
@@ -315,7 +315,7 @@ fn get_transactions(is_builder: bool) -> Scenario {
 
 // Helper to run the test, takes a flag for indicating if running in standalone
 // mode or Gaggle mode.
-async fn run_load_test(is_builder: bool, is_gaggle: bool) {
+async fn run_load_test<G: Goose>(is_builder: bool, is_gaggle: bool) {
     // Start the mock server.
     let server = MockServer::start();
 
@@ -332,7 +332,7 @@ async fn run_load_test(is_builder: bool, is_gaggle: bool) {
             common::run_load_test(
                 common::build_load_test(
                     configuration,
-                    vec![get_transactions(is_builder)],
+                    vec![get_transactions::<G>(is_builder)],
                     None,
                     None,
                 ),
@@ -346,7 +346,7 @@ async fn run_load_test(is_builder: bool, is_gaggle: bool) {
 
             // Workers launched in own threads, store thread handles.
             let worker_handles = common::launch_gaggle_workers(EXPECT_WORKERS, || {
-                common::build_load_test(
+                common::build_load_test::<G>(
                     worker_configuration.clone(),
                     vec![get_transactions(is_builder)],
                     None,
@@ -362,7 +362,7 @@ async fn run_load_test(is_builder: bool, is_gaggle: bool) {
             common::run_load_test(
                 common::build_load_test(
                     manager_configuration,
-                    vec![get_transactions(is_builder)],
+                    vec![get_transactions::<G>(is_builder)],
                     None,
                     None,
                 ),

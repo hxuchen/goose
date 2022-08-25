@@ -3,13 +3,11 @@ use std::time::Instant;
 use http::header;
 use url::Url;
 use crate::{GooseConfiguration, GooseError, GooseLoggerTx, GooseMetric};
-use crate::logger::GooseLog;
 use crate::metrics::GooseRequestMetric;
-use crate::prelude::{TransactionError, TransactionResult};
+use crate::prelude::TransactionResult;
 
-pub trait Goose: 'static + Hash + Sized + Send + Sync {
-    /// The function type of a goose transaction function.
-    type TransactionFunction;
+pub trait Goose: 'static + Hash + Sized + Send + Sync + Clone {
+    fn new(scenarios_index: usize, base_url: Url, configuration: &GooseConfiguration, load_test_hash: u64) -> Result<Self, GooseError>;
 
     fn add_slept(&mut self, duration: u64);
 

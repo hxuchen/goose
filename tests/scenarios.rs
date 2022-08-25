@@ -1,3 +1,4 @@
+use std::convert::TryInto;
 /// Validate that Goose only runs the selected Scenario filtered by --scenarios.
 use httpmock::{Method::GET, Mock, MockServer};
 use serial_test::serial;
@@ -33,24 +34,28 @@ enum TestType {
 
 // Test transaction.
 pub async fn get_scenarioa1(user: &mut GooseUser) -> TransactionResult {
+    let mut user: GooseUser = user.try_into().unwrap();
     let _goose = user.get(SCENARIOA1).await?;
     Ok(())
 }
 
 // Test transaction.
 pub async fn get_scenarioa2(user: &mut GooseUser) -> TransactionResult {
+    let mut user: GooseUser = user.try_into().unwrap();
     let _goose = user.get(SCENARIOA2).await?;
     Ok(())
 }
 
 // Test transaction.
 pub async fn get_scenariob1(user: &mut GooseUser) -> TransactionResult {
+    let mut user: GooseUser = user.try_into().unwrap();
     let _goose = user.get(SCENARIOB1).await?;
     Ok(())
 }
 
 // Test transaction.
 pub async fn get_scenariob2(user: &mut GooseUser) -> TransactionResult {
+    let mut user: GooseUser = user.try_into().unwrap();
     let _goose = user.get(SCENARIOB2).await?;
     Ok(())
 }
@@ -172,7 +177,7 @@ fn validate_loadtest(
 }
 
 // Returns the appropriate scenarios needed to build these tests.
-fn get_scenarios() -> Vec<Scenario> {
+fn get_scenarios<G: Goose>() -> Vec<Scenario<G>> {
     vec![
         scenario!("Scenario A1").register_transaction(transaction!(get_scenarioa1)),
         scenario!("Scenario A2").register_transaction(transaction!(get_scenarioa2)),
@@ -182,7 +187,7 @@ fn get_scenarios() -> Vec<Scenario> {
 }
 
 // Helper to run all standalone tests.
-async fn run_standalone_test(test_type: TestType) {
+async fn run_standalone_test<G: Goose>(test_type: TestType) {
     // Start the mock server.
     let server = MockServer::start();
 
@@ -192,7 +197,7 @@ async fn run_standalone_test(test_type: TestType) {
     // Build common configuration elements.
     let configuration = common_build_configuration(&server, &test_type);
 
-    let mut goose = common::build_load_test(configuration.clone(), get_scenarios(), None, None);
+    let mut goose = common::build_load_test::<G>(configuration.clone(), get_scenarios(), None, None);
 
     // By default, only run scenarios starting with `scenariob`.
     goose = *goose
@@ -207,7 +212,7 @@ async fn run_standalone_test(test_type: TestType) {
 }
 
 // Helper to run all standalone tests.
-async fn run_gaggle_test(test_type: TestType) {
+async fn run_gaggle_test<G: Goose>(test_type: TestType) {
     // Start the mock server.
     let server = MockServer::start();
 
@@ -219,7 +224,7 @@ async fn run_gaggle_test(test_type: TestType) {
 
     // Workers launched in own threads, store thread handles.
     let worker_handles = common::launch_gaggle_workers(EXPECT_WORKERS, || {
-        common::build_load_test(worker_configuration.clone(), get_scenarios(), None, None)
+        common::build_load_test::<G>(worker_configuration.clone(), get_scenarios(), None, None)
     });
 
     // Build common configuration elements, adding Manager Gaggle flags.
@@ -260,7 +265,7 @@ async fn run_gaggle_test(test_type: TestType) {
 
     // Build the load test for the Manager.
     let mut manager_goose_attack =
-        common::build_load_test(manager_configuration.clone(), get_scenarios(), None, None);
+        common::build_load_test::<G>(manager_configuration.clone(), get_scenarios(), None, None);
 
     // By default, only run scenarios starting with `scenariob`.
     manager_goose_attack = *manager_goose_attack

@@ -7,6 +7,7 @@ use goose::config::GooseConfiguration;
 use goose::goose::{Scenario, Transaction};
 use goose::metrics::GooseMetrics;
 use goose::GooseAttack;
+use goose::prelude::Goose;
 
 type WorkerHandles = Vec<tokio::task::JoinHandle<GooseMetrics>>;
 
@@ -68,7 +69,7 @@ pub fn build_configuration(server: &MockServer, custom: Vec<&str>) -> GooseConfi
 
 /// Launch each Worker in its own thread, and return a vector of Worker handles.
 #[allow(dead_code)]
-pub fn launch_gaggle_workers<F: Fn() -> GooseAttack>(
+pub fn launch_gaggle_workers<G: Goose, F: Fn() -> GooseAttack<G>>(
     // The number of Workers to launch.
     expect_workers: usize,
     // A goose attack object which is cloned for each Worker.
@@ -88,12 +89,12 @@ pub fn launch_gaggle_workers<F: Fn() -> GooseAttack>(
 // Create a GooseAttack object from the configuration, Scenarios, and optional start and
 // stop Transactions.
 #[allow(dead_code)]
-pub fn build_load_test(
+pub fn build_load_test<G: Goose>(
     configuration: GooseConfiguration,
-    scenarios: Vec<Scenario>,
-    start_transaction: Option<&Transaction>,
-    stop_transaction: Option<&Transaction>,
-) -> GooseAttack {
+    scenarios: Vec<Scenario<G>>,
+    start_transaction: Option<&Transaction<G>>,
+    stop_transaction: Option<&Transaction<G>>,
+) -> GooseAttack<G> {
     // First set up the common base configuration.
     let mut goose = crate::GooseAttack::initialize_with_config(configuration).unwrap();
 
@@ -113,8 +114,8 @@ pub fn build_load_test(
 }
 
 /// Run the actual load test, returning the GooseMetrics.
-pub async fn run_load_test(
-    goose_attack: GooseAttack,
+pub async fn run_load_test<G: Goose>(
+    goose_attack: GooseAttack<G>,
     worker_handles: Option<WorkerHandles>,
 ) -> GooseMetrics {
     // Execute the load test.

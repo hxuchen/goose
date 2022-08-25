@@ -298,7 +298,6 @@ use std::time::Duration;
 use std::{fmt, io, str};
 use std::{future::Future, pin::Pin, time::Instant};
 use flume::Sender;
-use http::HeaderMap;
 use tokio::sync::RwLock;
 use url::Url;
 
@@ -825,6 +824,13 @@ pub struct GooseRequestCadence {
     coordinated_omission_counter: isize,
 }
 
+impl Default for GooseRequestCadence {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+
 impl GooseRequestCadence {
     // Return a new, empty RequestCadence object.
     pub fn new() -> GooseRequestCadence {
@@ -954,14 +960,90 @@ impl Hash for GooseUser {
 //     }
 // }
 
+impl Clone for GooseUser {
+    fn clone(&self) -> Self {
+        todo!()
+    }
+}
+
+// impl From<&mut dyn Goose> for GooseUser {
+//     fn from(other: &mut dyn Goose) -> Self {
+//         let mut data = None;
+//         if other.session_data.is_some() {
+//             let x = other.session_data.unwrap().clone();
+//             data = Some(Box::new(x))
+//         }
+//         Self {
+//             started: other.started,
+//             iterations: other.iterations,
+//             scenarios_index: other.scenarios_index,
+//             client: other.client.clone(),
+//             base_url: other.base_url.clone(),
+//             config: other.config.clone(),
+//             logger: other.logger.clone(),
+//             throttle: other.throttle.clone(),
+//             is_throttled: other.is_throttled,
+//             metrics_channel: other.metrics_channel.clone(),
+//             shutdown_channel: other.shutdown_channel.clone(),
+//             weighted_users_index: other.weighted_users_index,
+//             load_test_hash: other.load_test_hash,
+//             request_cadence: other.request_cadence.clone(),
+//             slept: other.slept,
+//             transaction_name: other.transaction_name.clone(),
+//             session_data: data,
+//         }
+//     }
+// }
+
 impl Goose for GooseUser {
-    type TransactionFunction = Arc<
-        dyn for<'r> Fn(
-            &'r mut Self,
-        ) -> Pin<Box<dyn Future<Output=TransactionResult> + Send + 'r>>
-        + Send
-        + Sync,
-    >;
+    /// Create a new user state.
+    fn new(
+        scenarios_index: usize,
+        base_url: Url,
+        configuration: &GooseConfiguration,
+        load_test_hash: u64,
+    ) -> Result<Self, GooseError> {
+        trace!("new GooseUser");
+
+        // Either use manually configured timeout, or default.
+        let timeout = if configuration.timeout.is_some() {
+            match crate::util::get_float_from_string(configuration.timeout.clone()) {
+                Some(f) => f as u64 * 1_000,
+                None => GOOSE_REQUEST_TIMEOUT,
+            }
+        } else {
+            GOOSE_REQUEST_TIMEOUT
+        };
+
+        let client = Client::builder()
+            .user_agent(APP_USER_AGENT)
+            .cookie_store(true)
+            .timeout(Duration::from_millis(timeout))
+            // Enable gzip unless `--no-gzip` flag is enabled.
+            .gzip(!configuration.no_gzip)
+            .build()?;
+
+        Ok(GooseUser {
+            started: Instant::now(),
+            iterations: 0,
+            scenarios_index,
+            client,
+            base_url,
+            config: configuration.clone(),
+            logger: None,
+            throttle: None,
+            is_throttled: true,
+            metrics_channel: None,
+            shutdown_channel: None,
+            // A value of max_value() indicates this user isn't fully initialized yet.
+            weighted_users_index: usize::max_value(),
+            load_test_hash,
+            request_cadence: GooseRequestCadence::new(),
+            slept: 0,
+            transaction_name: None,
+            session_data: None,
+        })
+    }
 
     fn add_slept(&mut self, duration: u64) {
         self.slept += duration
@@ -1378,55 +1460,6 @@ impl Goose for GooseUser {
 }
 
 impl GooseUser {
-    /// Create a new user state.
-    pub fn new(
-        scenarios_index: usize,
-        base_url: Url,
-        configuration: &GooseConfiguration,
-        load_test_hash: u64,
-    ) -> Result<Self, GooseError> {
-        trace!("new GooseUser");
-
-        // Either use manually configured timeout, or default.
-        let timeout = if configuration.timeout.is_some() {
-            match crate::util::get_float_from_string(configuration.timeout.clone()) {
-                Some(f) => f as u64 * 1_000,
-                None => GOOSE_REQUEST_TIMEOUT,
-            }
-        } else {
-            GOOSE_REQUEST_TIMEOUT
-        };
-
-        let client = Client::builder()
-            .user_agent(APP_USER_AGENT)
-            .cookie_store(true)
-            .timeout(Duration::from_millis(timeout))
-            // Enable gzip unless `--no-gzip` flag is enabled.
-            .gzip(!configuration.no_gzip)
-            .build()?;
-
-        Ok(GooseUser {
-            started: Instant::now(),
-            iterations: 0,
-            scenarios_index,
-            client,
-            base_url,
-            config: configuration.clone(),
-            logger: None,
-            throttle: None,
-            is_throttled: true,
-            metrics_channel: None,
-            shutdown_channel: None,
-            // A value of max_value() indicates this user isn't fully initialized yet.
-            weighted_users_index: usize::max_value(),
-            load_test_hash,
-            request_cadence: GooseRequestCadence::new(),
-            slept: 0,
-            transaction_name: None,
-            session_data: None,
-        })
-    }
-
     /// Returns the number of iterations this GooseUser has run through it's
     /// assigned [`Scenario`].
     pub fn get_iterations(&self) -> usize {
@@ -2837,6 +2870,15 @@ pub fn get_base_url(
     }
 }
 
+/// The function type of a goose transaction function.
+pub type TransactionFunction<G> = Arc<
+    dyn for<'r> Fn(
+        &'r mut G,
+    ) -> Pin<Box<dyn Future<Output=TransactionResult> + Send + 'r>>
+    + Send
+    + Sync,
+>;
+
 /// An individual transaction within a [`Scenario`](./struct.Scenario.html).
 #[derive(Clone)]
 pub struct Transaction<G: Goose> {
@@ -2855,11 +2897,11 @@ pub struct Transaction<G: Goose> {
     /// A flag indicating that this transaction runs when the user stops.
     pub on_stop: bool,
     /// A required function that is executed each time this transaction runs.
-    pub function: <G as Goose>::TransactionFunction,
+    pub function: TransactionFunction<G>,
 }
 
 impl<G: Goose> Transaction<G> {
-    pub fn new(function: G::TransactionFunction) -> Self {
+    pub fn new(function: TransactionFunction<G>) -> Self {
         trace!("new transaction");
         Transaction {
             transactions_index: usize::max_value(),

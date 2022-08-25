@@ -2,7 +2,7 @@ use rand::Rng;
 use std::time::{self, Duration};
 
 use crate::{get_worker_id, Goose};
-use crate::goose::{GooseUser, GooseUserCommand, Scenario};
+use crate::goose::{GooseUserCommand, Scenario, TransactionFunction};
 use crate::logger::GooseLog;
 use crate::metrics::{GooseMetric, ScenarioMetric, TransactionMetric};
 
@@ -254,7 +254,7 @@ async fn record_scenario<G: Goose>(
 
 // Invoke the transaction function, collecting transaction metrics.
 async fn invoke_transaction_function<G: Goose>(
-    function: &G::TransactionFunction,
+    function: &TransactionFunction<G>,
     thread_user: &mut G,
     thread_transaction_index: usize,
     thread_transaction_name: &str,

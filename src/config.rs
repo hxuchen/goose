@@ -2744,6 +2744,7 @@ impl GooseConfiguration {
 
 #[cfg(test)]
 mod test {
+    use crate::prelude::GooseUser;
     use super::*;
 
     #[test]
@@ -2770,7 +2771,7 @@ mod test {
         let manager_host = "127.0.0.1".to_string();
         let manager_port: usize = 1221;
 
-        let goose_attack = GooseAttack::initialize()
+        let goose_attack = GooseAttack::<GooseUser>::initialize()
             .unwrap()
             .set_default(GooseDefault::Host, host.as_str())
             .unwrap()

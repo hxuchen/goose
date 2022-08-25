@@ -20,6 +20,7 @@ use goose::prelude::*;
 use std::boxed::Box;
 use std::sync::Arc;
 use std::time::Duration;
+use goose::goose::TransactionFunction;
 
 #[tokio::main]
 async fn main() -> Result<(), GooseError> {
@@ -31,7 +32,7 @@ async fn main() -> Result<(), GooseError> {
     for request_path in paths {
         let path = request_path;
 
-        let closure: TransactionFunction = Arc::new(move |user| {
+        let closure: TransactionFunction<GooseUser> = Arc::new(move |user| {
             Box::pin(async move {
                 let _goose = user.get(path).await?;
 

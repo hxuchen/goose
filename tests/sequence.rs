@@ -187,7 +187,7 @@ fn validate_test(test_type: &TestType, mock_endpoints: &[Mock]) {
 }
 
 // Returns the appropriate scenario, start_transaction and stop_transaction needed to build these tests.
-fn get_transactions(test_type: &TestType) -> (Scenario, Transaction, Transaction) {
+fn get_transactions<G: Goose>(test_type: &TestType) -> (Scenario<G>, Transaction<G>, Transaction<G>) {
     match test_type {
         // No sequence declared, so transactions run in default RoundRobin order: 1, 3, 2, 1...
         TestType::NotSequenced => (
@@ -227,7 +227,7 @@ fn get_transactions(test_type: &TestType) -> (Scenario, Transaction, Transaction
 }
 
 // Helper to run all standalone tests.
-async fn run_standalone_test(test_type: TestType) {
+async fn run_standalone_test<G: Goose>(test_type: TestType) {
     // Start the mock server.
     let server = MockServer::start();
 
@@ -238,7 +238,7 @@ async fn run_standalone_test(test_type: TestType) {
     let configuration = common_build_configuration(&server, None, None);
 
     // Get the scenario, start and stop transactions to build a load test.
-    let (scenario, start_transaction, stop_transaction) = get_transactions(&test_type);
+    let (scenario, start_transaction, stop_transaction) = get_transactions::<G>(&test_type);
 
     let goose_attack = match test_type {
         TestType::NotSequenced | TestType::SequencedRoundRobin => {
@@ -269,7 +269,7 @@ async fn run_standalone_test(test_type: TestType) {
 }
 
 // Helper to run all gaggle tests.
-async fn run_gaggle_test(test_type: TestType) {
+async fn run_gaggle_test<G: Goose>(test_type: TestType) {
     // Start the mock server.
     let server = MockServer::start();
 
@@ -280,7 +280,7 @@ async fn run_gaggle_test(test_type: TestType) {
     let worker_configuration = common_build_configuration(&server, Some(true), None);
 
     // Get the scenario, start and stop transactions to build a load test.
-    let (scenario, start_transaction, stop_transaction) = get_transactions(&test_type);
+    let (scenario, start_transaction, stop_transaction) = get_transactions::<G>(&test_type);
 
     // Workers launched in own threads, store thread handles.
     let worker_handles = match test_type {

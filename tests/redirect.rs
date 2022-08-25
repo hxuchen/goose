@@ -292,7 +292,7 @@ fn validate_redirect(test_type: &TestType, mock_endpoints: &[Mock]) {
 }
 
 // Returns the appropriate scenario needed to build these tests.
-fn get_transactions(test_type: &TestType) -> Scenario {
+fn get_transactions<G: Goose>(test_type: &TestType) -> Scenario<G> {
     match test_type {
         TestType::Chain => {
             scenario!("LoadTest")
@@ -315,7 +315,7 @@ fn get_transactions(test_type: &TestType) -> Scenario {
 }
 
 // Helper to run all standalone tests.
-async fn run_standalone_test(test_type: TestType) {
+async fn run_standalone_test<G: Goose>(test_type: TestType) {
     // Start the mock servers.
     let server1 = MockServer::start();
     let server2 = MockServer::start();
@@ -334,7 +334,7 @@ async fn run_standalone_test(test_type: TestType) {
     common::run_load_test(
         common::build_load_test(
             configuration,
-            vec![get_transactions(&test_type)],
+            vec![get_transactions::<G>(&test_type)],
             None,
             None,
         ),
@@ -347,7 +347,7 @@ async fn run_standalone_test(test_type: TestType) {
 }
 
 // Helper to run all standalone tests.
-async fn run_gaggle_test(test_type: TestType) {
+async fn run_gaggle_test<G: Goose>(test_type: TestType) {
     // Start the mock servers.
     let server1 = MockServer::start();
     let server2 = MockServer::start();
@@ -364,7 +364,7 @@ async fn run_gaggle_test(test_type: TestType) {
 
     // Workers launched in own threads, store thread handles.
     let worker_handles = common::launch_gaggle_workers(EXPECT_WORKERS, || {
-        common::build_load_test(
+        common::build_load_test::<G>(
             worker_configuration.clone(),
             vec![get_transactions(&test_type)],
             None,
@@ -377,7 +377,7 @@ async fn run_gaggle_test(test_type: TestType) {
         common_build_configuration(&server1, sticky, None, Some(EXPECT_WORKERS));
 
     // Build the load test for the Workers.
-    let manager_goose_attack = common::build_load_test(
+    let manager_goose_attack = common::build_load_test::<G>(
         manager_configuration,
         vec![get_transactions(&test_type)],
         None,

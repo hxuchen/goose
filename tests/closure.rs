@@ -4,7 +4,7 @@ use std::sync::Arc;
 mod common;
 
 use goose::config::GooseConfiguration;
-use goose::goose::GooseMethod;
+use goose::goose::{GooseMethod, TransactionFunction};
 use goose::prelude::*;
 
 // Paths used in load tests performed during these tests.
@@ -112,7 +112,7 @@ fn common_build_configuration(
 }
 
 // Dynamically build scenario.
-fn build_scenario() -> Scenario {
+fn build_scenario<G: Goose>() -> Scenario<G> {
     // Get common configuration for building endpoints and the load test itself.
     let test_endpoints = configure_mock_endpoints();
 
@@ -121,7 +121,7 @@ fn build_scenario() -> Scenario {
         let path = item.path;
         let weight = item.weight;
 
-        let closure: TransactionFunction = Arc::new(move |user| {
+        let closure: TransactionFunction<G> = Arc::new(move |user| {
             Box::pin(async move {
                 let _goose = user.get(path).await?;
 
@@ -214,7 +214,7 @@ fn validate_closer_test(
 
 // Helper to run the test, takes a flag for indicating if running in standalone
 // mode or Gaggle mode.
-async fn run_load_test(is_gaggle: bool) {
+async fn run_load_test<G: Goose>(is_gaggle: bool) {
     // Start mock server.
     let server = MockServer::start();
 
@@ -232,7 +232,7 @@ async fn run_load_test(is_gaggle: bool) {
 
             // Run the Goose Attack.
             let goose_metrics = common::run_load_test(
-                common::build_load_test(configuration.clone(), vec![build_scenario()], None, None),
+                common::build_load_test(configuration.clone(), vec![build_scenario::<G>()], None, None),
                 None,
             )
             .await;
@@ -246,7 +246,7 @@ async fn run_load_test(is_gaggle: bool) {
 
             // Workers launched in own threads, store thread handles.
             let worker_handles = common::launch_gaggle_workers(EXPECT_WORKERS, || {
-                common::build_load_test(
+                common::build_load_test::<G>(
                     worker_configuration.clone(),
                     vec![build_scenario()],
                     None,
@@ -266,7 +266,7 @@ async fn run_load_test(is_gaggle: bool) {
             let goose_metrics = common::run_load_test(
                 common::build_load_test(
                     manager_configuration.clone(),
-                    vec![build_scenario()],
+                    vec![build_scenario::<G>()],
                     None,
                     None,
                 ),

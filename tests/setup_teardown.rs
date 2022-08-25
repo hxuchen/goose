@@ -130,7 +130,7 @@ fn validate_test(test_type: &TestType, mock_endpoints: &[Mock]) {
 }
 
 // Build an appropriate GooseAttack object for test type, using supplied configuration.
-fn build_goose_attack(test_type: &TestType, configuration: GooseConfiguration) -> GooseAttack {
+fn build_goose_attack<G: Goose>(test_type: &TestType, configuration: GooseConfiguration) -> GooseAttack<G> {
     let scenario =
         scenario!("LoadTest").register_transaction(transaction!(get_index).set_weight(9).unwrap());
     let start_transaction = transaction!(setup);
@@ -155,7 +155,7 @@ fn build_goose_attack(test_type: &TestType, configuration: GooseConfiguration) -
 }
 
 // Helper to run all standalone tests.
-async fn run_standalone_test(test_type: TestType) {
+async fn run_standalone_test<G: Goose>(test_type: TestType) {
     // Start the mock server.
     let server = MockServer::start();
 
@@ -166,7 +166,7 @@ async fn run_standalone_test(test_type: TestType) {
     let configuration = common_build_configuration(&server, None, None);
 
     // Use configuration to generate the load test.
-    let goose_attack = build_goose_attack(&test_type, configuration);
+    let goose_attack = build_goose_attack::<G>(&test_type, configuration);
 
     // Run the load test.
     common::run_load_test(goose_attack, None).await;
@@ -176,7 +176,7 @@ async fn run_standalone_test(test_type: TestType) {
 }
 
 // Helper to run all gaggle tests.
-async fn run_gaggle_test(test_type: TestType) {
+async fn run_gaggle_test<G: Goose>(test_type: TestType) {
     // Start the mock server.
     let server = MockServer::start();
 
@@ -188,14 +188,14 @@ async fn run_gaggle_test(test_type: TestType) {
 
     // Workers launched in own threads, store thread handles.
     let worker_handles = common::launch_gaggle_workers(EXPECT_WORKERS, || {
-        build_goose_attack(&test_type, worker_configuration.clone())
+        build_goose_attack::<G>(&test_type, worker_configuration.clone())
     });
 
     // Build Manager configuration.
     let manager_configuration = common_build_configuration(&server, None, Some(EXPECT_WORKERS));
 
     // Use Manager configuration to generate the load test.
-    let goose_attack = build_goose_attack(&test_type, manager_configuration);
+    let goose_attack = build_goose_attack::<G>(&test_type, manager_configuration);
 
     // Run the load test.
     common::run_load_test(goose_attack, Some(worker_handles)).await;

@@ -1,3 +1,4 @@
+use std::convert::TryInto;
 use httpmock::{Method::GET, Mock, MockServer};
 use serial_test::serial;
 
@@ -23,12 +24,14 @@ const EXPECT_WORKERS: usize = 2;
 
 // Test transaction.
 pub async fn get_index(user: &mut GooseUser) -> TransactionResult {
+    let mut user: GooseUser = user.try_into().unwrap();
     let _goose = user.get(INDEX_PATH).await?;
     Ok(())
 }
 
 // Test transaction.
-pub async fn get_about(user: &mut GooseUser) -> TransactionResult {
+pub async fn get_about<G: Goose>(user: &mut G) -> TransactionResult {
+    let mut user: GooseUser = user.try_into().unwrap();
     let _goose = user.get(ABOUT_PATH).await?;
     Ok(())
 }
@@ -149,7 +152,7 @@ fn validate_test(
 }
 
 // Returns the appropriate scenario needed to build these tests.
-fn get_transactions() -> Scenario {
+fn get_transactions<G: Goose>() -> Scenario<G> {
     scenario!("LoadTest")
         .register_transaction(transaction!(get_index))
         .register_transaction(transaction!(get_about))
@@ -183,7 +186,7 @@ async fn test_throttle() {
         common::build_load_test(configuration, vec![get_transactions()], None, None),
         None,
     )
-    .await;
+        .await;
 
     // Confirm that the load test was actually throttled.
     let test1_lines = validate_test(
@@ -213,7 +216,7 @@ async fn test_throttle() {
         common::build_load_test(configuration, vec![get_transactions()], None, None),
         None,
     )
-    .await;
+        .await;
 
     // Confirm that the load test was actually throttled, at an increased rate.
     let _ = validate_test(

@@ -248,7 +248,7 @@ fn validate_test(test_type: &TestType, scheduler: &GooseScheduler, mock_endpoint
 }
 
 // Returns the appropriate scenario, start_transaction and stop_transaction needed to build these tests.
-fn get_scenarios() -> (Scenario, Scenario, Transaction, Transaction) {
+fn get_scenarios<G: Goose>() -> (Scenario<G>, Scenario<G>, Transaction<G>, Transaction<G>) {
     (
         scenario!("ScenarioOne")
             .register_transaction(transaction!(one_with_delay))
@@ -267,7 +267,7 @@ fn get_scenarios() -> (Scenario, Scenario, Transaction, Transaction) {
 }
 
 // Returns a single Scenario with two Transactions, a start_transaction, and a stop_transaction.
-fn get_transactions() -> (Scenario, Transaction, Transaction) {
+fn get_transactions<G: Goose>() -> (Scenario<G>, Transaction<G>, Transaction<G>) {
     (
         scenario!("Scenario")
             .register_transaction(transaction!(three).set_weight(USERS * 2).unwrap())
@@ -281,7 +281,7 @@ fn get_transactions() -> (Scenario, Transaction, Transaction) {
 }
 
 // Helper to run all standalone tests.
-async fn run_standalone_test(test_type: &TestType, scheduler: &GooseScheduler) {
+async fn run_standalone_test<G: Goose>(test_type: &TestType, scheduler: &GooseScheduler) {
     // Start the mock server.
     let server = MockServer::start();
 
@@ -305,7 +305,7 @@ async fn run_standalone_test(test_type: &TestType, scheduler: &GooseScheduler) {
             // Get the scenarios, start and stop transactions to build a load test.
             let (scenario1, scenario2, start_transaction, stop_transaction) = get_scenarios();
             // Set up the common base configuration.
-            crate::GooseAttack::initialize_with_config(configuration)
+            crate::GooseAttack::<G>::initialize_with_config(configuration)
                 .unwrap()
                 .register_scenario(scenario1)
                 .register_scenario(scenario2)
@@ -334,7 +334,7 @@ async fn run_standalone_test(test_type: &TestType, scheduler: &GooseScheduler) {
 }
 
 // Helper to run all gaggle tests.
-async fn run_gaggle_test(test_type: &TestType, scheduler: &GooseScheduler) {
+async fn run_gaggle_test<G: Goose>(test_type: &TestType, scheduler: &GooseScheduler) {
     // Start the mock server.
     let server = MockServer::start();
 
@@ -388,7 +388,7 @@ async fn run_gaggle_test(test_type: &TestType, scheduler: &GooseScheduler) {
     let manager_goose_attack = match test_type {
         TestType::Scenarios | TestType::ScenariosLimitIterations => {
             // Get the scenarios, start and stop transactions to build a load test.
-            let (scenario1, scenario2, start_transaction, stop_transaction) = get_scenarios();
+            let (scenario1, scenario2, start_transaction, stop_transaction) = get_scenarios::<G>();
             // Build the load test for the Manager.
             crate::GooseAttack::initialize_with_config(manager_configuration)
                 .unwrap()

@@ -77,7 +77,7 @@ use tokio::fs::File;
 
 use crate::config::{GooseConfiguration, GooseDefaults};
 use crate::controller::{ControllerProtocol, ControllerRequest};
-use crate::goose::{GaggleUser, GooseUser, GooseUserCommand, Scenario, Transaction};
+use crate::goose::{GaggleUser, GooseUserCommand, Scenario, Transaction};
 use crate::goose_trait::Goose;
 use crate::graph::GraphData;
 use crate::logger::{GooseLoggerJoinHandle, GooseLoggerTx};
@@ -107,9 +107,9 @@ lazy_static! {
 type WeightedTransactions = Vec<(usize, String)>;
 
 /// Internal representation of unsequenced transactions.
-type UnsequencedTransactions<G: Goose> = Vec<Transaction<G>>;
+type UnsequencedTransactions<G> = Vec<Transaction<G>>;
 /// Internal representation of sequenced transactions.
-type SequencedTransactions<G: Goose> = BTreeMap<usize, Vec<Transaction<G>>>;
+type SequencedTransactions<G> = BTreeMap<usize, Vec<Transaction<G>>>;
 
 /// Returns the unique identifier of the running Worker when running in Gaggle mode.
 ///
@@ -815,7 +815,7 @@ impl<G> GooseAttack<G>
                     self.scenarios[*scenarios_index].host.clone(),
                     self.defaults.host.clone(),
                 )?;
-                weighted_users.push(GooseUser::new(
+                weighted_users.push(G::new(
                     self.scenarios[*scenarios_index].scenarios_index,
                     base_url,
                     &self.configuration,
