@@ -297,8 +297,16 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{fmt, str};
 use std::{future::Future, pin::Pin, time::Instant};
+use std::io::Error;
+use futures::{SinkExt, StreamExt};
+use http::StatusCode;
+use json_rpc_types::Id;
+use tokio::net::TcpStream;
 use tokio::sync::RwLock;
+use tokio_util::codec::Framed;
 use url::Url;
+use zkmatrix_pool_protocol::message::stratum::{StratumCodec, StratumMessage};
+use zkmatrix_pool_protocol::{CURRENT_PROTOCOL_VERSION, PROTOCOL_PREFIX};
 
 use crate::logger::GooseLog;
 use crate::metrics::{
@@ -371,6 +379,7 @@ pub enum TransactionError {
         method: Method,
     },
 }
+
 /// Implement a helper to provide a text description of all possible types of errors.
 impl TransactionError {
     fn describe(&self) -> &str {
@@ -498,6 +507,7 @@ pub struct Scenario {
     /// An optional default host to run this `Scenario` against.
     pub host: Option<String>,
 }
+
 impl Scenario {
     /// Creates a new [`Scenario`](./struct.Scenario.html). Once created, a
     /// [`Transaction`](./struct.Transaction.html) must be assigned to it, and finally it must
@@ -640,8 +650,8 @@ impl Scenario {
                 min_wait,
                 max_wait,
                 detail:
-                    "The min_wait option can not be set to a larger value than the max_wait option."
-                        .to_string(),
+                "The min_wait option can not be set to a larger value than the max_wait option."
+                    .to_string(),
             });
         }
         self.transaction_wait = Some((min_wait, max_wait));
@@ -672,6 +682,7 @@ pub enum GooseMethod {
     Post,
     Put,
 }
+
 /// Display method in upper case.
 impl fmt::Display for GooseMethod {
     // Implement display of `GooseMethod` with `{}` marker.
@@ -709,10 +720,11 @@ pub struct GooseResponse {
     /// The request that this is a response to.
     pub request: GooseRequestMetric,
     /// The response.
-    pub response: Result<Response, reqwest::Error>,
+    pub response: Option<Result<Response, reqwest::Error>>,
 }
+
 impl GooseResponse {
-    pub fn new(request: GooseRequestMetric, response: Result<Response, reqwest::Error>) -> Self {
+    pub fn new(request: GooseRequestMetric, response: Option<Result<Response, reqwest::Error>>) -> Self {
         GooseResponse { request, response }
     }
 }
@@ -730,6 +742,7 @@ pub struct GooseDebug {
     /// Optional body text returned by server.
     pub body: Option<String>,
 }
+
 impl GooseDebug {
     fn new(
         tag: &str,
@@ -763,6 +776,7 @@ pub struct GaggleUser {
     /// Load test hash.
     pub load_test_hash: u64,
 }
+
 impl GaggleUser {
     /// Create a new user state.
     pub fn new(
@@ -809,6 +823,7 @@ struct GooseRequestCadence {
     /// many times the mitigation triggered.
     coordinated_omission_counter: isize,
 }
+
 impl GooseRequestCadence {
     // Return a new, empty RequestCadence object.
     fn new() -> GooseRequestCadence {
@@ -891,6 +906,7 @@ pub struct GooseUser {
     /// [`GooseUserData`] trait.
     session_data: Option<Box<dyn GooseUserData>>,
 }
+
 impl GooseUser {
     /// Create a new user state.
     pub fn new(
@@ -1165,6 +1181,17 @@ impl GooseUser {
 
         // Make the request and return the GooseResponse.
         self.request(goose_request).await
+    }
+
+    pub async fn get_aleo(&mut self, path: &str) -> Result<GooseResponse, TransactionError> {
+        // GET path.
+        let goose_request = GooseRequest::builder()
+            .method(GooseMethod::Get)
+            .path(path)
+            .build();
+
+        // Make the request and return the GooseResponse.
+        self.request_aleo(goose_request).await
     }
 
     /// A helper to make a named `GET` request of a path and collect relevant metrics.
@@ -1514,6 +1541,7 @@ impl GooseUser {
     ///     Ok(())
     /// }
     /// ```
+    ///
     pub async fn request<'a>(
         &mut self,
         mut request: GooseRequest<'_>,
@@ -1521,7 +1549,7 @@ impl GooseUser {
         // If the RequestBuilder is already defined in the GooseRequest use it.
         let request_builder = if request.request_builder.is_some() {
             request.request_builder.take().unwrap()
-        // Otherwise get a new RequestBuilder.
+            // Otherwise get a new RequestBuilder.
         } else {
             self.get_request_builder(&request.method, request.path)?
         };
@@ -1610,7 +1638,7 @@ impl GooseUser {
                         request_metric.success = false;
                         request_metric.error = format!("{}: {}", status_code, request_name);
                     }
-                // Otherwise record a failure if the returned status code was not a success.
+                    // Otherwise record a failure if the returned status code was not a success.
                 } else if !status_code.is_success() {
                     request_metric.success = false;
                     request_metric.error = format!("{}: {}", status_code, request_name);
@@ -1664,7 +1692,186 @@ impl GooseUser {
             });
         }
 
-        Ok(GooseResponse::new(request_metric, response))
+        Ok(GooseResponse::new(request_metric, Some(response)))
+    }
+
+
+    pub async fn request_aleo<'a>(
+        &mut self,
+        mut request: GooseRequest<'_>,
+    ) -> Result<GooseResponse, TransactionError> {
+        // If the RequestBuilder is already defined in the GooseRequest use it.
+        let request_builder = if request.request_builder.is_some() {
+            request.request_builder.take().unwrap()
+            // Otherwise get a new RequestBuilder.
+        } else {
+            self.get_request_builder(&request.method, request.path)?
+        };
+
+        // Determine the name for this request.
+        let request_name = self.get_request_name(&request);
+
+        // If throttle-requests is enabled...
+        if self.is_throttled && self.throttle.is_some() {
+            // ...wait until there's room to add a token to the throttle channel before proceeding.
+            debug!("GooseUser: waiting on throttle");
+            // Will result in TransactionError::RequestCanceled if this fails.
+            self.throttle.clone().unwrap().send_async(true).await?;
+        };
+
+        // Once past the throttle, the request is officially started.
+        let started = Instant::now();
+
+        // Create a Reqwest Request object from the RequestBuilder.
+        let built_request = request_builder.build()?;
+
+        // Get a string version of request path for logging.
+        let path = match Url::parse(built_request.url().as_ref()) {
+            Ok(u) => u.path().to_string(),
+            Err(e) => {
+                error!("failed to parse url: {}", e);
+                "".to_string()
+            }
+        };
+
+        // Grab a copy of any headers set by this request, included in the request log
+        // and the debug log.
+        let mut headers: Vec<String> = Vec::new();
+        for header in built_request.headers() {
+            headers.push(format!("{:?}", header));
+        }
+
+        // If enabled, grab a copy of the request body, included in the request log and
+        // the debug log.
+        let body = if self.config.request_body {
+            // Get a bytes representation of the body, if any.
+            let body_bytes = match built_request.body() {
+                Some(b) => b.as_bytes().unwrap_or(b""),
+                None => b"",
+            };
+            // Convert the bytes into a &str if valid utf8.
+            str::from_utf8(body_bytes).unwrap_or("")
+        } else {
+            ""
+        };
+
+        // Record the complete client request, included in the request log and the debug log.
+        let raw_request = GooseRawRequest::new(
+            goose_method_from_method(built_request.method().clone())?,
+            built_request.url().as_str(),
+            headers,
+            body,
+        );
+
+        // Record information about the request.
+        let mut request_metric = GooseRequestMetric::new(
+            raw_request,
+            request_name,
+            self.started.elapsed().as_millis(),
+            self.weighted_users_index,
+        );
+
+        // Make the actual request.
+        // let response1 = self.client.execute(built_request).await;
+        // request_metric.set_response_time(started.elapsed().as_millis());
+        let stream = TcpStream::connect("43.240.204.242:49156").await.unwrap();
+        let mut framed = Framed::new(stream, StratumCodec::default());
+        // login
+        framed.send(StratumMessage::Subscribe(Id::Num(0), "stress_account".to_string(), format!("{}/{}", PROTOCOL_PREFIX, *CURRENT_PROTOCOL_VERSION), None)).await.unwrap();
+        let _response = framed.next().await.unwrap();
+        framed.send(StratumMessage::Authorize(
+            Id::Num(1),
+            "stress_account".to_string(),
+            "stress_prover".to_string(),
+            None,
+        )).await.unwrap();
+        let response = framed.next().await.unwrap();
+        request_metric.set_response_time(started.elapsed().as_millis());
+
+
+        // Determine if the request suceeded or failed.
+        match &response {
+            Ok(r) => {
+                match r {
+                    StratumMessage::Response(_, _, r) => {
+                        let status_code = if r.is_some() {
+                            StatusCode::FORBIDDEN
+                        } else {
+                            StatusCode::OK
+                        };
+                        info!("{:?}: status_code {}", &path, status_code);
+
+                        // Update the request_metric object.
+                        request_metric.set_status_code(Some(status_code));
+                        request_metric.set_final_url("43.240.204.242");
+
+                        // Check if we were expecting a specific status code.
+                        if let Some(expect_status_code) = request.expect_status_code {
+                            // Record a failure if the expected status code was not returned.
+                            if status_code != expect_status_code {
+                                request_metric.success = false;
+                                request_metric.error = format!("{}: {}", status_code, request_name);
+                            }
+                            // Otherwise record a failure if the returned status code was not a success.
+                        } else if !status_code.is_success() {
+                            request_metric.success = false;
+                            request_metric.error = format!("{}: {}", status_code, request_name);
+                        }
+
+                        // Load test user was redirected.
+                        if self.config.sticky_follow && request_metric.raw.url != request_metric.final_url {
+                            let base_url = self.base_url.to_string();
+                            // Check if the URL redirected started with the load test base_url.
+                            if !request_metric.final_url.starts_with(&base_url) {
+                                let redirected_url = Url::parse(&request_metric.final_url)?;
+                                let redirected_base_url =
+                                    redirected_url[..url::Position::BeforePath].to_string();
+                                info!(
+                            "base_url for user {} redirected from {} to {}",
+                            self.weighted_users_index + 1,
+                            &base_url,
+                            &redirected_base_url
+                        );
+                                let _ = self.set_base_url(&redirected_base_url);
+                            }
+                        }
+                    }
+                    _ => {
+                        //todo do not deal with
+                    }
+                }
+            }
+            Err(e) => {
+                // @TODO: what can we learn from a reqwest error?
+                warn!("{:?}: {}", &path, e);
+                request_metric.success = false;
+                request_metric.set_status_code(None);
+                request_metric.error = e.to_string();
+            }
+        };
+
+        // If enabled, track the cadence between each time the same request is made while
+        // this GooseUser is running. If requests are blocked by the upstream server, this
+        // allows Goose to backfill the requests that should have been made based on
+        // cadence statistics.
+        request_metric.user_cadence = self
+            .coordinated_omission_mitigation(&request_metric)
+            .await?;
+
+        // Send a copy of the raw request object to the parent process if
+        // we're tracking metrics.
+        if !self.config.no_metrics {
+            self.send_request_metric_to_parent(request_metric.clone())?;
+        }
+
+        if request.error_on_fail && !request_metric.success {
+            error!("{:?} {}", &path, &request_metric.error);
+            return Err(TransactionError::RequestFailed {
+                raw_request: request_metric,
+            });
+        }
+
+        Ok(GooseResponse::new(request_metric, None))
     }
 
     /// Tracks the time it takes for the current GooseUser to loop through all Transactions
@@ -1696,7 +1903,7 @@ impl GooseUser {
                 || self.request_cadence.minimum_cadence == 0
             {
                 self.request_cadence.minimum_cadence = elapsed;
-            // Update `maximum_cadence` if this was the slowest seen.
+                // Update `maximum_cadence` if this was the slowest seen.
             } else if elapsed > self.request_cadence.maximum_cadence {
                 self.request_cadence.maximum_cadence = elapsed;
             }
@@ -2017,7 +2224,7 @@ impl GooseUser {
     ///                             Some(headers),
     ///                             Some(&html),
     ///                         );
-    ///                     },
+    ///                     }
     ///                     Err(e) => {
     ///                         // No body was returned, log everything else.
     ///                         user.log_debug(
@@ -2029,7 +2236,7 @@ impl GooseUser {
     ///                     }
     ///                 }
     ///             }
-    ///         },
+    ///         }
     ///         // No response from server.
     ///         Err(e) => {
     ///             user.log_debug(
@@ -2322,6 +2529,7 @@ pub struct GooseRequest<'a> {
     // Defaults to [`None`].
     request_builder: Option<RequestBuilder>,
 }
+
 impl<'a> GooseRequest<'a> {
     /// Convenience function to bring [`GooseRequestBuilder`] into scope.
     pub fn builder() -> GooseRequestBuilder<'a> {
@@ -2366,6 +2574,7 @@ pub struct GooseRequestBuilder<'a> {
     error_on_fail: bool,
     request_builder: Option<RequestBuilder>,
 }
+
 impl<'a> GooseRequestBuilder<'a> {
     // Internal method to build a [`GooseRequest`] from a [`GooseRequestBuilder`].
     fn new() -> Self {
@@ -2693,10 +2902,10 @@ pub fn get_base_url(
 /// The function type of a goose transaction function.
 pub type TransactionFunction = Arc<
     dyn for<'r> Fn(
-            &'r mut GooseUser,
-        ) -> Pin<Box<dyn Future<Output = TransactionResult> + Send + 'r>>
-        + Send
-        + Sync,
+        &'r mut GooseUser,
+    ) -> Pin<Box<dyn Future<Output=TransactionResult> + Send + 'r>>
+    + Send
+    + Sync,
 >;
 
 /// An individual transaction within a [`Scenario`](./struct.Scenario.html).
@@ -2719,6 +2928,7 @@ pub struct Transaction {
     /// A required function that is executed each time this transaction runs.
     pub function: TransactionFunction,
 }
+
 impl Transaction {
     pub fn new(function: TransactionFunction) -> Self {
         trace!("new transaction");
@@ -2946,6 +3156,7 @@ impl Transaction {
         self
     }
 }
+
 impl Hash for Transaction {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.transactions_index.hash(state);
@@ -3190,7 +3401,7 @@ mod tests {
             Some("http://www2.example.com/".to_string()),
             Some("http://www.example.com/".to_string()),
         )
-        .unwrap();
+            .unwrap();
         let user2 = GooseUser::new(0, base_url, &configuration, 0).unwrap();
 
         // Confirm the URLs are correctly built using the scenario_host.
@@ -3266,7 +3477,7 @@ mod tests {
         assert_eq!(goose.request.name, NO_SUCH_PATH);
         assert!(!goose.request.success);
         assert!(!goose.request.update);
-        assert_eq!(goose.request.status_code, 404,);
+        assert_eq!(goose.request.status_code, 404, );
         not_found.assert_hits(1);
 
         // Set up a mock http server endpoint.

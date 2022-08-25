@@ -27,12 +27,12 @@ async fn main() -> Result<(), GooseError> {
         .register_scenario(
             scenario!("WebsiteUser")
                 // After each transactions runs, sleep randomly from 5 to 15 seconds.
-                .set_wait_time(Duration::from_secs(5), Duration::from_secs(15))?
+                // .set_wait_time(Duration::from_secs(5), Duration::from_secs(15))?
                 // This transaction only runs one time when the user first starts.
-                .register_transaction(transaction!(website_login).set_on_start())
+                // .register_transaction(transaction!(website_login).set_on_start())
                 // These next two transactions run repeatedly as long as the load test is running.
                 .register_transaction(transaction!(website_index))
-                .register_transaction(transaction!(website_about)),
+                // .register_transaction(transaction!(website_about)),
         )
         .execute()
         .await?;
@@ -52,7 +52,7 @@ async fn website_login(user: &mut GooseUser) -> TransactionResult {
 
 /// A very simple transaction that simply loads the front page.
 async fn website_index(user: &mut GooseUser) -> TransactionResult {
-    let _goose = user.get("/").await?;
+    let _goose = user.get_aleo("/").await?;
 
     Ok(())
 }

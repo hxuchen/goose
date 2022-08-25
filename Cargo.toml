@@ -12,6 +12,7 @@ keywords = ["loadtesting", "performance", "web", "framework", "tool"]
 license = "Apache-2.0"
 
 [dependencies]
+json-rpc-types = "1.1.0"
 async-trait = "0.1"
 chrono = "0.4"
 ctrlc = "3.1"
@@ -27,7 +28,7 @@ num_cpus = "1.0"
 num-format = "0.4"
 rand = "0.8"
 regex = "1"
-reqwest = { version = "0.11",  default-features = false, features = [
+reqwest = { version = "0.11", default-features = false, features = [
     "cookies",
     "gzip",
     "json",
@@ -40,7 +41,8 @@ serde_json = "1.0"
 simplelog = "0.10"
 strum = "0.24"
 strum_macros = "0.24"
-tokio = { version = "~1.15.0", features = [
+tokio-util = { version = "0.7.3", features = ["codec"] }
+tokio = { version = "1.20.1", features = [
     "fs",
     "io-util",
     "macros",
@@ -52,6 +54,8 @@ tokio = { version = "~1.15.0", features = [
 tokio-tungstenite = "0.15"
 tungstenite = "0.15"
 url = "2"
+zkmatrix-pool-protocol = { git = "https://github.com/ABMatrix/zkmatrix-pool-protocol", branch = "0.2.0" }
+
 
 # optional dependencies
 nng = { version = "1.0", optional = true }
@@ -67,6 +71,6 @@ rustc_version = "0.4"
 [dev-dependencies]
 httpmock = "0.6"
 native-tls = "0.2"
-nix = "0.24"
-rustls = "0.19"
-serial_test = "0.5"
+nix = "0.25.0"
+rustls = "0.20.6"
+serial_test = "0.9.0"
