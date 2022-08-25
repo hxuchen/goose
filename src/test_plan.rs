@@ -11,7 +11,7 @@ use std::str::FromStr;
 use std::time;
 
 use crate::config::GooseConfiguration;
-use crate::util;
+use crate::{Goose, util};
 use crate::{AttackPhase, GooseAttack, GooseAttackRunState, GooseError};
 
 /// Internal data structure representing a test plan.
@@ -163,6 +163,7 @@ pub struct TestPlanHistory {
     /// The number of users when the step started.
     pub users: usize,
 }
+
 impl TestPlanHistory {
     /// A helper to record a new test plan step in the historical record.
     pub(crate) fn step(action: TestPlanStepAction, users: usize) -> TestPlanHistory {
@@ -174,7 +175,7 @@ impl TestPlanHistory {
     }
 }
 
-impl GooseAttack {
+impl<G: Goose> GooseAttack<G> {
     // Advance the active [`GooseAttack`](./struct.GooseAttack.html) to the next TestPlan step.
     pub(crate) fn advance_test_plan(&mut self, goose_attack_run_state: &mut GooseAttackRunState) {
         // Record the instant this new step starts, for use with timers.
@@ -192,7 +193,7 @@ impl GooseAttack {
                 self.set_attack_phase(goose_attack_run_state, AttackPhase::Maintain);
                 TestPlanStepAction::Maintaining
             }
-        // If this is not the last TestPlan step, determine what happens next.
+            // If this is not the last TestPlan step, determine what happens next.
         } else if self.test_plan.current < self.test_plan.steps.len() {
             match self.test_plan.steps[self.test_plan.current]
                 .0

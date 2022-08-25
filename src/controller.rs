@@ -6,7 +6,7 @@
 use crate::config::GooseConfiguration;
 use crate::metrics::GooseMetrics;
 use crate::test_plan::{TestPlan, TestPlanHistory, TestPlanStepAction};
-use crate::util;
+use crate::{Goose, util};
 use crate::{AttackPhase, GooseAttack, GooseAttackRunState, GooseError};
 
 use async_trait::async_trait;
@@ -464,7 +464,7 @@ impl ControllerCommand {
             env!("CARGO_PKG_NAME"),
             env!("CARGO_PKG_VERSION")
         )
-        .expect("failed to write to buffer");
+            .expect("failed to write to buffer");
         // Builds help screen in the order commands are defined in the ControllerCommand enum.
         for command in ControllerCommand::iter() {
             write!(
@@ -473,14 +473,14 @@ impl ControllerCommand {
                 command.details().help.name,
                 command.details().help.description
             )
-            .expect("failed to write to buffer");
+                .expect("failed to write to buffer");
         }
         String::from_utf8(help_text).expect("invalid utf-8 in help text")
     }
 }
 
 /// The parent process side of the Controller functionality.
-impl GooseAttack {
+impl<G: Goose> GooseAttack<G> {
     /// Handle Controller requests.
     pub(crate) async fn handle_controller_requests(
         &mut self,
@@ -670,7 +670,7 @@ impl GooseAttack {
 
                                         // Determine how quickly to adjust user account.
                                         let hatch_rate = if let Some(hatch_rate) =
-                                            self.configuration.hatch_rate.as_ref()
+                                        self.configuration.hatch_rate.as_ref()
                                         {
                                             util::get_hatch_rate(Some(hatch_rate.to_string()))
                                         } else {
@@ -1015,7 +1015,7 @@ impl FromStr for ControllerCommand {
             Err(GooseError::InvalidControllerCommand {
                 detail: format!("unrecognized controller command: '{}'.", s),
             })
-        // This shouldn't ever happen, but if it does report all available information.
+            // This shouldn't ever happen, but if it does report all available information.
         } else if matches.len() > 1 {
             let mut matched_commands = Vec::new();
             for index in matches {
@@ -1027,7 +1027,7 @@ impl FromStr for ControllerCommand {
                     s, matched_commands
                 ),
             })
-        // Only one command matched.
+            // Only one command matched.
         } else {
             Ok(keys[*matches.first().unwrap()].clone())
         }
@@ -1209,6 +1209,7 @@ pub(crate) struct ControllerState {
     /// Which protocol this Controller understands.
     protocol: ControllerProtocol,
 }
+
 // Defines functions shared by all Controllers.
 impl ControllerState {
     async fn accept_connections(self, mut socket: tokio::net::TcpStream) {
@@ -1263,7 +1264,7 @@ impl ControllerState {
                                 &mut socket,
                                 Err("unrecognized command".to_string()),
                             )
-                            .await;
+                                .await;
                         }
                     } else {
                         // Corrupted request from telnet client, exit.
@@ -1319,7 +1320,7 @@ impl ControllerState {
                                         .to_string(),
                                 ),
                             )
-                            .await;
+                                .await;
                         }
                     } else {
                         self.write_to_socket(
@@ -1329,7 +1330,7 @@ impl ControllerState {
                                     .to_string(),
                             ),
                         )
-                        .await;
+                            .await;
                     }
                 }
             }
@@ -1400,6 +1401,7 @@ trait Controller<T> {
     // Extract the command string from a Controller client request.
     async fn get_command_string(&self, raw_value: T) -> Result<String, String>;
 }
+
 #[async_trait]
 impl Controller<ControllerTelnetMessage> for ControllerState {
     // Extract the command string from a telnet Controller client request.
@@ -1425,6 +1427,7 @@ impl Controller<ControllerTelnetMessage> for ControllerState {
         Ok(command_string.to_string())
     }
 }
+
 #[async_trait]
 impl Controller<ControllerWebSocketMessage> for ControllerState {
     // Extract the command string from a WebSocket Controller client request.
@@ -1441,7 +1444,7 @@ impl Controller<ControllerWebSocketMessage> for ControllerState {
                             Ok(c) => c,
                             Err(_) => {
                                 return Err("invalid json, see Goose book https://book.goose.rs/controller/websocket.html"
-                                    .to_string())
+                                    .to_string());
                             }
                         };
                     return Ok(command_string.request);
@@ -1458,6 +1461,7 @@ impl Controller<ControllerWebSocketMessage> for ControllerState {
         Err("WebSocket handshake error".to_string())
     }
 }
+
 #[async_trait]
 trait ControllerExecuteCommand<T> {
     // Run the command received from a Controller request. Returns a boolean, if true exit.
@@ -1471,6 +1475,7 @@ trait ControllerExecuteCommand<T> {
     // if the request was successful or not.
     async fn write_to_socket(&self, socket: &mut T, response_message: Result<String, String>);
 }
+
 #[async_trait]
 impl ControllerExecuteCommand<tokio::net::TcpStream> for ControllerState {
     // Run the command received from a telnet Controller request.
@@ -1533,6 +1538,7 @@ impl ControllerExecuteCommand<tokio::net::TcpStream> for ControllerState {
         };
     }
 }
+
 #[async_trait]
 impl ControllerExecuteCommand<ControllerWebSocketSender> for ControllerState {
     // Run the command received from a WebSocket Controller request.
@@ -1550,12 +1556,12 @@ impl ControllerExecuteCommand<ControllerWebSocketSender> for ControllerState {
             // If exiting, notify the WebSocket client that this connection is closing.
             if exit_controller
                 && socket
-                    .send(Message::Close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
-                        code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
-                        reason: std::borrow::Cow::Borrowed("exit"),
-                    })))
-                    .await
-                    .is_err()
+                .send(Message::Close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                    code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+                    reason: std::borrow::Cow::Borrowed("exit"),
+                })))
+                .await
+                .is_err()
             {
                 warn!("failed to write data to stream");
             }
@@ -1592,12 +1598,12 @@ impl ControllerExecuteCommand<ControllerWebSocketSender> for ControllerState {
         // If exiting, notify the WebSocket client that this connection is closing.
         if exit_controller
             && socket
-                .send(Message::Close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
-                    code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
-                    reason: std::borrow::Cow::Borrowed("shutdown"),
-                })))
-                .await
-                .is_err()
+            .send(Message::Close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+                reason: std::borrow::Cow::Borrowed("shutdown"),
+            })))
+            .await
+            .is_err()
         {
             warn!("failed to write data to stream");
         }

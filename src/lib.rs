@@ -78,6 +78,7 @@ use tokio::fs::File;
 use crate::config::{GooseConfiguration, GooseDefaults};
 use crate::controller::{ControllerProtocol, ControllerRequest};
 use crate::goose::{GaggleUser, GooseUser, GooseUserCommand, Scenario, Transaction};
+use crate::goose_trait::Goose;
 use crate::graph::GraphData;
 use crate::logger::{GooseLoggerJoinHandle, GooseLoggerTx};
 use crate::metrics::{GooseMetric, GooseMetrics};
@@ -106,9 +107,9 @@ lazy_static! {
 type WeightedTransactions = Vec<(usize, String)>;
 
 /// Internal representation of unsequenced transactions.
-type UnsequencedTransactions = Vec<Transaction>;
+type UnsequencedTransactions<G: Goose> = Vec<Transaction<G>>;
 /// Internal representation of sequenced transactions.
-type SequencedTransactions = BTreeMap<usize, Vec<Transaction>>;
+type SequencedTransactions<G: Goose> = BTreeMap<usize, Vec<Transaction<G>>>;
 
 /// Returns the unique identifier of the running Worker when running in Gaggle mode.
 ///
@@ -185,6 +186,7 @@ pub enum GooseError {
         detail: String,
     },
 }
+
 /// Implement a helper to provide a text description of all possible types of errors.
 impl GooseError {
     fn describe(&self) -> &str {
@@ -376,17 +378,17 @@ struct GooseAttackRunState {
 }
 
 /// Global internal state for the load test.
-pub struct GooseAttack {
+pub struct GooseAttack<G: Goose> {
     /// An optional transaction that is run one time before starting GooseUsers and running Scenarios.
-    test_start_transaction: Option<Transaction>,
+    test_start_transaction: Option<Transaction<G>>,
     /// An optional transaction that is run one time after all GooseUsers have finished.
-    test_stop_transaction: Option<Transaction>,
+    test_stop_transaction: Option<Transaction<G>>,
     /// A vector containing one copy of each Scenario defined by this load test.
-    scenarios: Vec<Scenario>,
+    scenarios: Vec<Scenario<G>>,
     /// A set of all registered scenario names.
     scenario_machine_names: HashSet<String>,
     /// A weighted vector containing a GooseUser object for each GooseUser that will run during this load test.
-    weighted_users: Vec<GooseUser>,
+    weighted_users: Vec<G>,
     /// A weighted vector containing a lightweight GaggleUser object that is sent to all Workers if running in Gaggle mode.
     weighted_gaggle_users: Vec<GaggleUser>,
     /// Optional default values for Goose run-time options.
@@ -413,7 +415,9 @@ pub struct GooseAttack {
 }
 
 /// Goose's internal global state.
-impl GooseAttack {
+impl<G> GooseAttack<G>
+    where G: Goose
+{
     /// Load configuration and initialize a [`GooseAttack`](./struct.GooseAttack.html).
     ///
     /// # Example
@@ -422,7 +426,7 @@ impl GooseAttack {
     ///
     /// let mut goose_attack = GooseAttack::initialize();
     /// ```
-    pub fn initialize() -> Result<GooseAttack, GooseError> {
+    pub fn initialize() -> Result<GooseAttack<G>, GooseError> {
         let configuration = GooseConfiguration::parse_args_default_or_exit();
         Ok(GooseAttack {
             test_start_transaction: None,
@@ -460,7 +464,7 @@ impl GooseAttack {
     /// ```
     pub fn initialize_with_config(
         configuration: GooseConfiguration,
-    ) -> Result<GooseAttack, GooseError> {
+    ) -> Result<GooseAttack<G>, GooseError> {
         Ok(GooseAttack {
             test_start_transaction: None,
             test_stop_transaction: None,
@@ -577,7 +581,7 @@ impl GooseAttack {
     ///     Ok(())
     /// }
     /// ```
-    pub fn register_scenario(mut self, mut scenario: Scenario) -> Self {
+    pub fn register_scenario(mut self, mut scenario: Scenario<G>) -> Self {
         scenario.scenarios_index = self.scenarios.len();
         // Machine names must be unique. If this machine name has already been seen, add an
         // integer at the end to differentiate.
@@ -631,7 +635,7 @@ impl GooseAttack {
     ///     Ok(())
     /// }
     /// ```
-    pub fn test_start(mut self, transaction: Transaction) -> Self {
+    pub fn test_start(mut self, transaction: Transaction<G>) -> Self {
         self.test_start_transaction = Some(transaction);
         self
     }
@@ -661,18 +665,18 @@ impl GooseAttack {
     ///     Ok(())
     /// }
     /// ```
-    pub fn test_stop(mut self, transaction: Transaction) -> Self {
+    pub fn test_stop(mut self, transaction: Transaction<G>) -> Self {
         self.test_stop_transaction = Some(transaction);
         self
     }
 
     /// Internal helper to determine if the scenario is currently active.
-    fn scenario_is_active(&self, scenario: &Scenario) -> bool {
+    fn scenario_is_active(&self, scenario: &Scenario<G>) -> bool {
         // All scenarios are enabled by default.
         if self.configuration.scenarios.active.is_empty() {
             true
-        // Returns true or false depending on if the machine name is included in the
-        // configured `--scenarios`.
+            // Returns true or false depending on if the machine name is included in the
+            // configured `--scenarios`.
         } else {
             for active in &self.configuration.scenarios.active {
                 if scenario.machine_name.contains(active) {
@@ -787,7 +791,7 @@ impl GooseAttack {
     }
 
     /// Pre-allocate a vector of weighted [`GooseUser`](./goose/struct.GooseUser.html)s.
-    fn weight_scenario_users(&mut self, total_users: usize) -> Result<Vec<GooseUser>, GooseError> {
+    fn weight_scenario_users(&mut self, total_users: usize) -> Result<Vec<G>, GooseError> {
         trace!("weight_scenario_users");
 
         let weighted_scenarios = self.allocate_scenarios();
@@ -884,7 +888,7 @@ impl GooseAttack {
         // Return if enabled.
         if !self.configuration.report_file.is_empty() {
             Some(self.configuration.report_file.to_string())
-        // Otherwise there is no report file.
+            // Otherwise there is no report file.
         } else {
             None
         }
@@ -1034,7 +1038,8 @@ impl GooseAttack {
             #[cfg(not(feature = "gaggle"))]
             {
                 return Err(GooseError::FeatureNotEnabled {
-                    feature: "gaggle".to_string(), detail: "Load test must be recompiled with `--features gaggle` to start in manager mode.".to_string()
+                    feature: "gaggle".to_string(),
+                    detail: "Load test must be recompiled with `--features gaggle` to start in manager mode.".to_string(),
                 });
             }
         }
@@ -1093,7 +1098,7 @@ impl GooseAttack {
                                 return Err(GooseError::InvalidOption {
                                     option: "--host".to_string(),
                                     value: "".to_string(),
-                                    detail: format!("A host must be defined via the --host option, the GooseAttack.set_default() function, or the Scenario.set_host() function (no host defined for {}).", scenario.name)
+                                    detail: format!("A host must be defined via the --host option, the GooseAttack.set_default() function, or the Scenario.set_host() function (no host defined for {}).", scenario.name),
                                 });
                             }
                         }
@@ -1312,7 +1317,7 @@ impl GooseAttack {
                         None,
                         self.defaults.host.clone(),
                     )?;
-                    let mut user = GooseUser::single(base_url, &self.configuration)?;
+                    let mut user = G::single(base_url, &self.configuration)?;
                     let function = &t.function;
                     let _ = function(&mut user).await;
                 }
@@ -1338,7 +1343,7 @@ impl GooseAttack {
                         None,
                         self.defaults.host.clone(),
                     )?;
-                    let mut user = GooseUser::single(base_url, &self.configuration)?;
+                    let mut user = G::single(base_url, &self.configuration)?;
                     let function = &t.function;
                     let _ = function(&mut user).await;
                 }
@@ -1490,7 +1495,7 @@ impl GooseAttack {
             // If this is the first load plan step, then there were no previously started users.
             let previous_users = if self.test_plan.current == 0 {
                 0
-            // Otherwise retreive the number of users configured in the previous step.
+                // Otherwise retreive the number of users configured in the previous step.
             } else {
                 self.test_plan.steps[self.test_plan.current - 1].0
             };
@@ -1509,9 +1514,9 @@ impl GooseAttack {
             // Determine if it's time to spawn a GooseUser.
             if goose_attack_run_state.adjust_user_in_ms == 0
                 || util::ms_timer_expired(
-                    goose_attack_run_state.adjust_user_timer,
-                    goose_attack_run_state.adjust_user_in_ms,
-                )
+                goose_attack_run_state.adjust_user_timer,
+                goose_attack_run_state.adjust_user_in_ms,
+            )
             {
                 let mut thread_user = self
                     .weighted_users
@@ -1532,7 +1537,7 @@ impl GooseAttack {
                 };
 
                 // Remember which task group this user is using.
-                thread_user.weighted_users_index = self.metrics.total_users;
+                thread_user.set_weighted_users_index(self.metrics.total_users);
 
                 // Create a per-thread channel allowing parent thread to control child threads.
                 let (parent_sender, thread_receiver): (
@@ -1542,25 +1547,24 @@ impl GooseAttack {
                 goose_attack_run_state.user_channels.push(parent_sender);
 
                 // Clone the logger_tx if enabled, otherwise is None.
-                thread_user.logger = goose_attack_run_state.all_threads_logger_tx.clone();
+                thread_user.set_logger(goose_attack_run_state.all_threads_logger_tx.clone());
 
                 // Copy the GooseUser-throttle receiver channel, used by all threads.
-                thread_user.throttle = if self.configuration.throttle_requests > 0 {
+                let throttle = if self.configuration.throttle_requests > 0 {
                     Some(goose_attack_run_state.throttle_threads_tx.clone().unwrap())
                 } else {
                     None
                 };
+                thread_user.set_throttle(throttle);
 
                 // Copy the GooseUser-metrics sender channel, used by all threads.
-                thread_user.metrics_channel =
-                    Some(goose_attack_run_state.all_threads_metrics_tx.clone());
+                thread_user.set_metrics_channel(Some(goose_attack_run_state.all_threads_metrics_tx.clone()));
 
                 // Copy the GooseUser-shutdown sender channel, used by all threads.
-                thread_user.shutdown_channel =
-                    Some(goose_attack_run_state.all_threads_shutdown_tx.clone());
+                thread_user.set_shutdown_channel(Some(goose_attack_run_state.all_threads_shutdown_tx.clone()));
 
                 // Copy the appropriate task_set into the thread.
-                let thread_scenario = self.scenarios[thread_user.scenarios_index].clone();
+                let thread_scenario = self.scenarios[thread_user.scenarios_index()].clone();
 
                 // Start at 1 as this is human visible.
                 let thread_number = self.metrics.total_users + 1;
@@ -1569,17 +1573,13 @@ impl GooseAttack {
 
                 // If running on Worker, use Worker configuration in GooseUser.
                 if is_worker {
-                    thread_user.config = self.configuration.clone();
+                    thread_user.set_config(self.configuration.clone());
                 }
 
                 // Launch a new user.
-                let user = tokio::spawn(user::user_main(
-                    thread_number,
-                    thread_scenario,
-                    thread_user,
-                    thread_receiver,
-                    is_worker,
-                ));
+                let user = tokio::spawn(
+                    user::user_main(thread_number, thread_scenario, thread_user, thread_receiver, is_worker)
+                );
 
                 goose_attack_run_state.users.push(user);
                 goose_attack_run_state.active_users += 1;
@@ -1591,9 +1591,9 @@ impl GooseAttack {
                 if let Some(running_metrics) = self.configuration.running_metrics {
                     if self.attack_mode != AttackMode::Worker
                         && util::ms_timer_expired(
-                            goose_attack_run_state.running_metrics_timer,
-                            running_metrics,
-                        )
+                        goose_attack_run_state.running_metrics_timer,
+                        running_metrics,
+                    )
                     {
                         goose_attack_run_state.running_metrics_timer = time::Instant::now();
                         self.metrics.print_running();
@@ -1626,9 +1626,9 @@ impl GooseAttack {
         // Determine if it's time to move to the next test plan step.
         if self.test_plan.current < self.test_plan.steps.len()
             && util::ms_timer_expired(
-                self.step_started.unwrap(),
-                self.test_plan.steps[self.test_plan.current].1,
-            )
+            self.step_started.unwrap(),
+            self.test_plan.steps[self.test_plan.current].1,
+        )
         {
             self.advance_test_plan(goose_attack_run_state);
         } else {
@@ -1638,7 +1638,7 @@ impl GooseAttack {
                 time::Duration::from_millis(500),
                 goose_attack_run_state.drift_timer,
             )
-            .await;
+                .await;
         }
 
         Ok(())
@@ -1748,7 +1748,7 @@ impl GooseAttack {
                 // Return to an Idle state.
                 self.set_attack_phase(goose_attack_run_state, AttackPhase::Idle);
             }
-        // If this is not the last step of the load test and sufficient users decreased, move to next step.
+            // If this is not the last step of the load test and sufficient users decreased, move to next step.
         } else if goose_attack_run_state.active_users
             <= self.test_plan.steps[self.test_plan.current].0
         {
@@ -1763,7 +1763,7 @@ impl GooseAttack {
                 // Advance to the next TestPlan step.
                 self.advance_test_plan(goose_attack_run_state);
             }
-        // Otherwise, decrease a user when ready.
+            // Otherwise, decrease a user when ready.
         } else {
             // Retreive the number of users configured in the previous step.
             let previous_users = self.test_plan.steps[self.test_plan.current - 1].0;
@@ -1778,9 +1778,9 @@ impl GooseAttack {
             // Determine if it's time to decrease a GooseUser.
             if goose_attack_run_state.adjust_user_in_ms == 0
                 || util::ms_timer_expired(
-                    goose_attack_run_state.adjust_user_timer,
-                    goose_attack_run_state.adjust_user_in_ms,
-                )
+                goose_attack_run_state.adjust_user_timer,
+                goose_attack_run_state.adjust_user_in_ms,
+            )
             {
                 // Reset the adjust timer.
                 goose_attack_run_state.adjust_user_timer = std::time::Instant::now();
@@ -1936,7 +1936,7 @@ impl GooseAttack {
                     option: "--report-file".to_string(),
                     value: self.get_report_file_path().unwrap(),
                     detail: format!("Failed to create report file: {}", e),
-                })
+                });
             }
         };
 
@@ -1947,7 +1947,7 @@ impl GooseAttack {
     }
 
     // Called internally in local-mode and gaggle-mode.
-    async fn start_attack(mut self, socket: Option<Socket>) -> Result<GooseAttack, GooseError> {
+    async fn start_attack(mut self, socket: Option<Socket>) -> Result<GooseAttack<G>, GooseError> {
         trace!("start_attack: socket({:?})", socket);
 
         // The GooseAttackRunState is used while spawning and running the
@@ -1973,8 +1973,8 @@ impl GooseAttack {
                                 sleep_duration,
                                 goose_attack_run_state.drift_timer,
                             )
-                            .await;
-                        // Only display informational message about being idle one time.
+                                .await;
+                            // Only display informational message about being idle one time.
                         } else {
                             info!("Goose is currently idle.");
                             goose_attack_run_state.idle_status_displayed = true;
@@ -2083,8 +2083,8 @@ impl GooseAttack {
 /// starts. Normal `transactions` are then run for the duration of the
 /// [`GooseAttack`](./struct.GooseAttack.html). The `on_stop_transactions` finally are only run once when
 /// the [`GooseAttack`](./struct.GooseAttack.html) stops.
-fn allocate_transactions(
-    scenario: &Scenario,
+fn allocate_transactions<G: Goose>(
+    scenario: &Scenario<G>,
     scheduler: &GooseScheduler,
 ) -> (
     WeightedTransactions,
@@ -2097,12 +2097,12 @@ fn allocate_transactions(
     );
 
     // A BTreeMap of Vectors allows us to group and sort transactions per sequence value.
-    let mut sequenced_transactions: SequencedTransactions = BTreeMap::new();
-    let mut sequenced_on_start_transactions: SequencedTransactions = BTreeMap::new();
-    let mut sequenced_on_stop_transactions: SequencedTransactions = BTreeMap::new();
-    let mut unsequenced_transactions: UnsequencedTransactions = Vec::new();
-    let mut unsequenced_on_start_transactions: UnsequencedTransactions = Vec::new();
-    let mut unsequenced_on_stop_transactions: UnsequencedTransactions = Vec::new();
+    let mut sequenced_transactions: SequencedTransactions<G> = BTreeMap::new();
+    let mut sequenced_on_start_transactions: SequencedTransactions<G> = BTreeMap::new();
+    let mut sequenced_on_stop_transactions: SequencedTransactions<G> = BTreeMap::new();
+    let mut unsequenced_transactions: UnsequencedTransactions<G> = Vec::new();
+    let mut unsequenced_on_start_transactions: UnsequencedTransactions<G> = Vec::new();
+    let mut unsequenced_on_stop_transactions: UnsequencedTransactions<G> = Vec::new();
     let mut u: usize = 0;
     let mut v: usize;
 
@@ -2111,7 +2111,7 @@ fn allocate_transactions(
         if transaction.sequence > 0 {
             if transaction.on_start {
                 if let Some(sequence) =
-                    sequenced_on_start_transactions.get_mut(&transaction.sequence)
+                sequenced_on_start_transactions.get_mut(&transaction.sequence)
                 {
                     // This is another transaction with this order value.
                     sequence.push(transaction.clone());
@@ -2124,7 +2124,7 @@ fn allocate_transactions(
             // Allow a transaction to be both on_start and on_stop.
             if transaction.on_stop {
                 if let Some(sequence) =
-                    sequenced_on_stop_transactions.get_mut(&transaction.sequence)
+                sequenced_on_stop_transactions.get_mut(&transaction.sequence)
                 {
                     // This is another transaction with this order value.
                     sequence.push(transaction.clone());
@@ -2257,8 +2257,8 @@ fn allocate_transactions(
 }
 
 /// Build a weighted vector of vectors of unsequenced Transactions.
-fn weight_unsequenced_transactions(
-    unsequenced_transactions: &[Transaction],
+fn weight_unsequenced_transactions<G: Goose>(
+    unsequenced_transactions: &[Transaction<G>],
     u: usize,
 ) -> (Vec<Vec<usize>>, usize) {
     // Build a vector of vectors to be used to schedule users.
@@ -2282,8 +2282,8 @@ fn weight_unsequenced_transactions(
 }
 
 /// Build a weighted vector of vectors of sequenced Transactions.
-fn weight_sequenced_transactions(
-    sequenced_transactions: &SequencedTransactions,
+fn weight_sequenced_transactions<G: Goose>(
+    sequenced_transactions: &SequencedTransactions<G>,
     u: usize,
 ) -> BTreeMap<usize, Vec<Vec<usize>>> {
     // Build a sequenced BTreeMap containing weighted vectors of Transactions.
@@ -2354,7 +2354,7 @@ fn schedule_unsequenced_transactions(
             // Allocate serially in the weighted order defined. If the Random scheduler is being used, they will get
             // shuffled later.
             for (transaction_index, transactions) in
-                available_unsequenced_transactions.iter().enumerate()
+            available_unsequenced_transactions.iter().enumerate()
             {
                 debug!(
                     "allocating all {} transactions from Transaction {}",

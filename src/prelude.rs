@@ -9,8 +9,7 @@
 
 pub use crate::config::{GooseDefault, GooseDefaultType};
 pub use crate::goose::{
-    GooseMethod, GooseRequest, GooseUser, Scenario, Transaction, TransactionError,
-    TransactionFunction, TransactionResult,
+    GooseMethod, GooseRequest, GooseUser, Scenario, Transaction, TransactionError, TransactionResult,
 };
 pub use crate::goose_trait::Goose;
 pub use crate::metrics::{GooseCoordinatedOmissionMitigation, GooseMetrics};

@@ -297,6 +297,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{fmt, io, str};
 use std::{future::Future, pin::Pin, time::Instant};
+use flume::Sender;
 use http::HeaderMap;
 use tokio::sync::RwLock;
 use url::Url;
@@ -305,8 +306,7 @@ use crate::logger::GooseLog;
 use crate::metrics::{
     GooseCoordinatedOmissionMitigation, GooseMetric, GooseRawRequest, GooseRequestMetric,
 };
-use crate::{GooseConfiguration, GooseError, WeightedTransactions};
-use crate::codec_goose::CodecGooseError;
+use crate::{GooseConfiguration, GooseError, GooseLoggerTx, WeightedTransactions};
 use crate::goose_trait::Goose;
 
 /// By default Goose sets the following User-Agent header when making requests.
@@ -478,7 +478,7 @@ impl From<flume::SendError<Option<GooseLog>>> for TransactionError {
 
 /// An individual scenario.
 #[derive(Clone, Hash)]
-pub struct Scenario {
+pub struct Scenario<G: Goose> {
     /// The name of the scenario.
     pub name: String,
     /// Auto-generated machine name of the scenario.
@@ -493,7 +493,7 @@ pub struct Scenario {
     pub transaction_wait: Option<(Duration, Duration)>,
     /// A vector containing one copy of each [`Transaction`](./struct.Transaction.html) that will
     /// run by users running this scenario.
-    pub transactions: Vec<Transaction>,
+    pub transactions: Vec<Transaction<G>>,
     /// A fully scheduled and weighted vector of integers (pointing to
     /// [`Transaction`](./struct.Transaction.html)s and [`Transaction`](./struct.Transaction.html) names.
     pub weighted_transactions: WeightedTransactions,
@@ -509,7 +509,7 @@ pub struct Scenario {
     pub host: Option<String>,
 }
 
-impl Scenario {
+impl<G: Goose> Scenario<G> {
     /// Creates a new [`Scenario`](./struct.Scenario.html). Once created, a
     /// [`Transaction`](./struct.Transaction.html) must be assigned to it, and finally it must
     /// be registered with the [`GooseAttack`](../struct.GooseAttack.html) object. The
@@ -525,7 +525,7 @@ impl Scenario {
         trace!("new scenario: name: {}", &name);
         Scenario {
             name: name.to_string(),
-            machine_name: Scenario::get_machine_name(name),
+            machine_name: Scenario::<G>::get_machine_name(name),
             scenarios_index: usize::max_value(),
             weight: 1,
             transaction_wait: None,
@@ -566,7 +566,7 @@ impl Scenario {
     ///     Ok(())
     /// }
     /// ```
-    pub fn register_transaction(mut self, mut transaction: Transaction) -> Self {
+    pub fn register_transaction(mut self, mut transaction: Transaction<G>) -> Self {
         trace!("{} register_transaction: {}", self.name, transaction.name);
         transaction.transactions_index = self.transactions.len();
         self.transactions.push(transaction);
@@ -908,7 +908,219 @@ pub struct GooseUser {
     session_data: Option<Box<dyn GooseUserData>>,
 }
 
+impl Hash for GooseUser {
+    fn hash<H: Hasher>(&self, _state: &mut H) {
+        // self.started.hash(state);
+        // self.iterations.hash(state);
+        // self.scenarios_index.hash(state);
+        // // self.client.hash(state);
+        // self.base_url.hash(state);
+        // self.config.hash(state);
+        // self.logger.hash(state);
+        // self.throttle.hash(state);
+        // self.is_throttled.hash(state);
+        // self.metrics_channel.hash(state);
+        // self.shutdown_channel.hash(state);
+        // self.weighted_users_index.hash(state);
+        // self.load_test_hash.hash(state);
+        // self.request_cadence.hash(state);
+        // self.slept.hash(state);
+        // self.transaction_name.hash(state);
+        // self.session_data.hash(state);
+    }
+}
+
+// impl Clone for GooseUser {
+//     fn clone(&self) -> Self {
+//         Self {
+//             started: self.started.clone(),
+//             iterations: self.iterations.clone(),
+//             scenarios_index: self.scenarios_index.clone(),
+//             client: self.client.clone(),
+//             base_url: self.base_url.clone(),
+//             config: self.config.clone(),
+//             logger: self.logger.clone(),
+//             throttle: self.throttle.clone(),
+//             is_throttled: self.is_throttled.clone(),
+//             metrics_channel: self.metrics_channel.clone(),
+//             shutdown_channel: self.shutdown_channel.clone(),
+//             weighted_users_index: self.weighted_users_index.clone(),
+//             load_test_hash: self.load_test_hash.clone(),
+//             request_cadence: self.request_cadence.clone(),
+//             slept: self.slept.clone(),
+//             transaction_name: self.transaction_name.clone(),
+//             session_data: self.session_data.clone(),
+//         }
+//     }
+// }
+
 impl Goose for GooseUser {
+    type TransactionFunction = Arc<
+        dyn for<'r> Fn(
+            &'r mut Self,
+        ) -> Pin<Box<dyn Future<Output=TransactionResult> + Send + 'r>>
+        + Send
+        + Sync,
+    >;
+
+    fn add_slept(&mut self, duration: u64) {
+        self.slept += duration
+    }
+
+    fn add_iterations(&mut self, num: usize) {
+        self.iterations += num
+    }
+
+    fn iterations(&self) -> usize {
+        self.iterations
+    }
+
+    /// Tracks the time it takes for the current GooseUser to loop through all Transactions
+    /// if Coordinated Omission Mitigation is enabled.
+    fn update_request_cadence(&mut self, thread_number: usize) {
+        if let Some(co_mitigation) = self.config.co_mitigation.as_ref() {
+            // Return immediately if coordinated omission mitigation is disabled.
+            if co_mitigation == &GooseCoordinatedOmissionMitigation::Disabled {
+                return;
+            }
+
+            // Grab the current timestamp to calculate the difference since the last
+            // time through the loop.
+            let now = std::time::Instant::now();
+
+            // Swap out the `slept` counter, which is the total time the GooseUser slept
+            // between transactions, a potentially randomly changing value. Reset to 0 for the
+            // next loop through all Transactions.
+            self.request_cadence.delays_since_last_time = self.slept;
+            self.slept = 0;
+
+            // How much time passed since the last time this GooseUser looped through all
+            // transactions, accounting for time waiting between Transactions due to `set_wait_time`.
+            let elapsed = (now - self.request_cadence.last_time).as_millis() as u64
+                - self.request_cadence.delays_since_last_time;
+
+            // Update `minimum_cadence` if this was the fastest seen.
+            if elapsed < self.request_cadence.minimum_cadence
+                || self.request_cadence.minimum_cadence == 0
+            {
+                self.request_cadence.minimum_cadence = elapsed;
+                // Update `maximum_cadence` if this was the slowest seen.
+            } else if elapsed > self.request_cadence.maximum_cadence {
+                self.request_cadence.maximum_cadence = elapsed;
+            }
+
+            // Update request_cadence metrics based on the timing of the current request.
+            self.request_cadence.counter += 1;
+            self.request_cadence.total_elapsed += elapsed;
+            self.request_cadence.last_time = now;
+            self.request_cadence.average_cadence =
+                self.request_cadence.total_elapsed / self.request_cadence.counter;
+
+            if self.request_cadence.counter > 3 {
+                if self.request_cadence.coordinated_omission_counter < 0 {
+                    debug!(
+                        "user {} enabled coordinated omission mitigation",
+                        thread_number
+                    );
+                    self.request_cadence.coordinated_omission_counter += 1;
+                }
+                // Calculate the expected cadence for this Transaction request.
+                let cadence = match co_mitigation {
+                    // Expected cadence is the average time between requests.
+                    GooseCoordinatedOmissionMitigation::Average => {
+                        self.request_cadence.average_cadence
+                    }
+                    // Expected cadence is the maximum time between requests.
+                    GooseCoordinatedOmissionMitigation::Maximum => {
+                        self.request_cadence.maximum_cadence
+                    }
+                    // Expected cadence is the minimum time between requests.
+                    GooseCoordinatedOmissionMitigation::Minimum => {
+                        self.request_cadence.minimum_cadence
+                    }
+                    // This is not possible as we would have exited already if coordinated
+                    // omission mitigation was disabled.
+                    GooseCoordinatedOmissionMitigation::Disabled => unreachable!(),
+                };
+                if elapsed > (cadence * 2) {
+                    debug!(
+                        "user {}: coordinated_omission_mitigation: elapsed({}) > cadence({})",
+                        thread_number, elapsed, cadence
+                    );
+                    self.request_cadence.coordinated_omission_counter += 1;
+                    self.request_cadence.coordinated_omission_mitigation = elapsed;
+                } else {
+                    self.request_cadence.coordinated_omission_mitigation = 0;
+                }
+                // Always track the expected cadence.
+                self.request_cadence.user_cadence = cadence;
+            }
+        } else {
+            // Coordinated Omission Mitigation defaults to average.
+            unreachable!();
+        }
+    }
+
+    fn started(&self) -> Instant {
+        self.started
+    }
+
+    fn scenarios_index(&self) -> usize {
+        self.scenarios_index
+    }
+
+    fn set_config(&mut self, config: GooseConfiguration) {
+        self.config = config
+    }
+
+    fn config(&self) -> &GooseConfiguration {
+        &self.config
+    }
+
+    fn set_shutdown_channel(&mut self, shutdown_channel: Option<Sender<usize>>) {
+        self.shutdown_channel = shutdown_channel
+    }
+
+    fn shutdown_channel(&self) -> Option<Sender<usize>> {
+        self.shutdown_channel.clone()
+    }
+
+    fn set_metrics_channel(&mut self, metrics_channel: Option<flume::Sender<GooseMetric>>) {
+        self.metrics_channel = metrics_channel
+    }
+
+    fn metrics_channel(&self) -> Option<Sender<GooseMetric>> {
+        self.metrics_channel.clone()
+    }
+
+    fn set_logger(&mut self, logger: GooseLoggerTx) {
+        self.logger = logger
+    }
+
+    fn logger(&self) -> GooseLoggerTx {
+        self.logger.clone()
+    }
+
+    fn set_throttle(&mut self, throttle: Option<Sender<bool>>) {
+        self.throttle = throttle
+    }
+
+    fn set_weighted_users_index(&mut self, total_users: usize) {
+        self.weighted_users_index = total_users
+    }
+
+    fn weighted_users_index(&self) -> usize {
+        self.weighted_users_index
+    }
+
+    fn set_transaction_name(&mut self, transaction_name: String) {
+        self.transaction_name.replace(transaction_name);
+    }
+
+    fn take_transaction_name(&mut self) -> Option<String> {
+        self.transaction_name.take()
+    }
+
     fn send_request_metric_to_parent(
         &self,
         request_metric: GooseRequestMetric,
@@ -1151,6 +1363,18 @@ impl Goose for GooseUser {
 
         Ok(())
     }
+
+    /// Create a new single-use user.
+    fn single(base_url: Url, configuration: &GooseConfiguration) -> Result<Self, GooseError> {
+        let mut single_user = GooseUser::new(0, base_url, configuration, 0)?;
+        // Only one user, so index is 0.
+        single_user.weighted_users_index = 0;
+        // Do not throttle [`test_start`](../struct.GooseAttack.html#method.test_start) (setup) and
+        // [`test_stop`](../struct.GooseAttack.html#method.test_stop) (teardown) transactions.
+        single_user.is_throttled = false;
+
+        Ok(single_user)
+    }
 }
 
 impl GooseUser {
@@ -1201,18 +1425,6 @@ impl GooseUser {
             transaction_name: None,
             session_data: None,
         })
-    }
-
-    /// Create a new single-use user.
-    pub fn single(base_url: Url, configuration: &GooseConfiguration) -> Result<Self, GooseError> {
-        let mut single_user = GooseUser::new(0, base_url, configuration, 0)?;
-        // Only one user, so index is 0.
-        single_user.weighted_users_index = 0;
-        // Do not throttle [`test_start`](../struct.GooseAttack.html#method.test_start) (setup) and
-        // [`test_stop`](../struct.GooseAttack.html#method.test_stop) (teardown) transactions.
-        single_user.is_throttled = false;
-
-        Ok(single_user)
     }
 
     /// Returns the number of iterations this GooseUser has run through it's
@@ -1929,92 +2141,6 @@ impl GooseUser {
         Ok(GooseResponse::new(request_metric, response))
     }
 
-    /// Tracks the time it takes for the current GooseUser to loop through all Transactions
-    /// if Coordinated Omission Mitigation is enabled.
-    pub(crate) async fn update_request_cadence(&mut self, thread_number: usize) {
-        if let Some(co_mitigation) = self.config.co_mitigation.as_ref() {
-            // Return immediately if coordinated omission mitigation is disabled.
-            if co_mitigation == &GooseCoordinatedOmissionMitigation::Disabled {
-                return;
-            }
-
-            // Grab the current timestamp to calculate the difference since the last
-            // time through the loop.
-            let now = std::time::Instant::now();
-
-            // Swap out the `slept` counter, which is the total time the GooseUser slept
-            // between transactions, a potentially randomly changing value. Reset to 0 for the
-            // next loop through all Transactions.
-            self.request_cadence.delays_since_last_time = self.slept;
-            self.slept = 0;
-
-            // How much time passed since the last time this GooseUser looped through all
-            // transactions, accounting for time waiting between Transactions due to `set_wait_time`.
-            let elapsed = (now - self.request_cadence.last_time).as_millis() as u64
-                - self.request_cadence.delays_since_last_time;
-
-            // Update `minimum_cadence` if this was the fastest seen.
-            if elapsed < self.request_cadence.minimum_cadence
-                || self.request_cadence.minimum_cadence == 0
-            {
-                self.request_cadence.minimum_cadence = elapsed;
-                // Update `maximum_cadence` if this was the slowest seen.
-            } else if elapsed > self.request_cadence.maximum_cadence {
-                self.request_cadence.maximum_cadence = elapsed;
-            }
-
-            // Update request_cadence metrics based on the timing of the current request.
-            self.request_cadence.counter += 1;
-            self.request_cadence.total_elapsed += elapsed;
-            self.request_cadence.last_time = now;
-            self.request_cadence.average_cadence =
-                self.request_cadence.total_elapsed / self.request_cadence.counter;
-
-            if self.request_cadence.counter > 3 {
-                if self.request_cadence.coordinated_omission_counter < 0 {
-                    debug!(
-                        "user {} enabled coordinated omission mitigation",
-                        thread_number
-                    );
-                    self.request_cadence.coordinated_omission_counter += 1;
-                }
-                // Calculate the expected cadence for this Transaction request.
-                let cadence = match co_mitigation {
-                    // Expected cadence is the average time between requests.
-                    GooseCoordinatedOmissionMitigation::Average => {
-                        self.request_cadence.average_cadence
-                    }
-                    // Expected cadence is the maximum time between requests.
-                    GooseCoordinatedOmissionMitigation::Maximum => {
-                        self.request_cadence.maximum_cadence
-                    }
-                    // Expected cadence is the minimum time between requests.
-                    GooseCoordinatedOmissionMitigation::Minimum => {
-                        self.request_cadence.minimum_cadence
-                    }
-                    // This is not possible as we would have exited already if coordinated
-                    // omission mitigation was disabled.
-                    GooseCoordinatedOmissionMitigation::Disabled => unreachable!(),
-                };
-                if elapsed > (cadence * 2) {
-                    debug!(
-                        "user {}: coordinated_omission_mitigation: elapsed({}) > cadence({})",
-                        thread_number, elapsed, cadence
-                    );
-                    self.request_cadence.coordinated_omission_counter += 1;
-                    self.request_cadence.coordinated_omission_mitigation = elapsed;
-                } else {
-                    self.request_cadence.coordinated_omission_mitigation = 0;
-                }
-                // Always track the expected cadence.
-                self.request_cadence.user_cadence = cadence;
-            }
-        } else {
-            // Coordinated Omission Mitigation defaults to average.
-            unreachable!();
-        }
-    }
-
     /// If Coordinated Omission Mitigation is enabled, compares how long has passed since the last
     /// loop through all Transactions by the current GooseUser. Through this mechanism, Goose is
     /// able to detect stalls on the upstream server being load tested, backfilling requests based
@@ -2711,18 +2837,9 @@ pub fn get_base_url(
     }
 }
 
-/// The function type of a goose transaction function.
-pub type TransactionFunction = Arc<
-    dyn for<'r> Fn(
-        &'r mut GooseUser,
-    ) -> Pin<Box<dyn Future<Output=TransactionResult> + Send + 'r>>
-    + Send
-    + Sync,
->;
-
 /// An individual transaction within a [`Scenario`](./struct.Scenario.html).
 #[derive(Clone)]
-pub struct Transaction {
+pub struct Transaction<G: Goose> {
     /// An index into [`Scenario`](./struct.Scenario.html)`.transaction`, indicating which
     /// transaction this is.
     pub transactions_index: usize,
@@ -2738,11 +2855,11 @@ pub struct Transaction {
     /// A flag indicating that this transaction runs when the user stops.
     pub on_stop: bool,
     /// A required function that is executed each time this transaction runs.
-    pub function: TransactionFunction,
+    pub function: <G as Goose>::TransactionFunction,
 }
 
-impl Transaction {
-    pub fn new(function: TransactionFunction) -> Self {
+impl<G: Goose> Transaction<G> {
+    pub fn new(function: G::TransactionFunction) -> Self {
         trace!("new transaction");
         Transaction {
             transactions_index: usize::max_value(),
@@ -2969,7 +3086,7 @@ impl Transaction {
     }
 }
 
-impl Hash for Transaction {
+impl<G: Goose> Hash for Transaction<G> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.transactions_index.hash(state);
         self.name.hash(state);

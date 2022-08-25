@@ -14,7 +14,7 @@ use std::str::FromStr;
 use crate::logger::GooseLogFormat;
 use crate::metrics::GooseCoordinatedOmissionMitigation;
 use crate::test_plan::TestPlan;
-use crate::util;
+use crate::{Goose, util};
 use crate::{GooseAttack, GooseError};
 
 /// Constant defining Goose's default port when running a Gaggle.
@@ -32,7 +32,7 @@ const DEFAULT_PORT: &str = "5115";
 /// the the below structure.
 #[derive(Options, Debug, Clone, Serialize, Deserialize)]
 #[options(
-    help = r#"Goose is a modern, high-performance, distributed HTTP(S) load testing tool,
+help = r#"Goose is a modern, high-performance, distributed HTTP(S) load testing tool,
 written in Rust. Visit https://book.goose.rs/ for more information.
 
 The following runtime options are available when launching a Goose load test:"#
@@ -75,10 +75,10 @@ pub struct GooseConfiguration {
     pub quiet: u8,
     /// Increases Goose verbosity (-v, -vv, etc)
     #[options(
-        count,
-        short = "v",
-        // Add a blank line and then a 'Metrics:' header after this option
-        help = "Increases Goose verbosity (-v, -vv, etc)\n\nMetrics:"
+    count,
+    short = "v",
+    // Add a blank line and then a 'Metrics:' header after this option
+    help = "Increases Goose verbosity (-v, -vv, etc)\n\nMetrics:"
     )]
     pub verbose: u8,
 
@@ -197,8 +197,8 @@ pub struct GooseConfiguration {
     pub throttle_requests: usize,
     /// Follows base_url redirect with subsequent requests
     #[options(
-        no_short,
-        help = "Follows base_url redirect with subsequent requests\n\nGaggle:"
+    no_short,
+    help = "Follows base_url redirect with subsequent requests\n\nGaggle:"
     )]
     pub sticky_follow: bool,
 
@@ -233,6 +233,7 @@ pub struct GooseConfiguration {
 pub struct Scenarios {
     pub active: Vec<String>,
 }
+
 /// Implement [`FromStr`] to convert `"foo,bar"` comma separated string to a vector of strings.
 impl FromStr for Scenarios {
     type Err = GooseError;
@@ -617,7 +618,8 @@ pub trait GooseDefaultType<T> {
     /// ```
     fn set_default(self, key: GooseDefault, value: T) -> Result<Box<Self>, GooseError>;
 }
-impl GooseDefaultType<&str> for GooseAttack {
+
+impl<G: Goose> GooseDefaultType<&str> for GooseAttack<G> {
     /// Sets [`GooseDefault`] to a [`&str`] value.
     fn set_default(mut self, key: GooseDefault, value: &str) -> Result<Box<Self>, GooseError> {
         match key {
@@ -729,7 +731,8 @@ impl GooseDefaultType<&str> for GooseAttack {
         Ok(Box::new(self))
     }
 }
-impl GooseDefaultType<usize> for GooseAttack {
+
+impl<G: Goose> GooseDefaultType<usize> for GooseAttack<G> {
     /// Sets [`GooseDefault`] to a [`usize`] value.
     fn set_default(mut self, key: GooseDefault, value: usize) -> Result<Box<Self>, GooseError> {
         match key {
@@ -771,7 +774,7 @@ impl GooseDefaultType<usize> for GooseAttack {
                         "set_default(GooseDefault::{:?}, {}) expected &str value, received usize",
                         key, value
                     ),
-                })
+                });
             }
             GooseDefault::NoResetMetrics
             | GooseDefault::NoMetrics
@@ -798,7 +801,7 @@ impl GooseDefaultType<usize> for GooseAttack {
                         "set_default(GooseDefault::{:?}, {}) expected bool value, received usize",
                         key, value
                     ),
-                })
+                });
             }
             GooseDefault::RequestFormat
             | GooseDefault::DebugFormat
@@ -828,7 +831,8 @@ impl GooseDefaultType<usize> for GooseAttack {
         Ok(Box::new(self))
     }
 }
-impl GooseDefaultType<bool> for GooseAttack {
+
+impl<G: Goose> GooseDefaultType<bool> for GooseAttack<G> {
     /// Sets [`GooseDefault`] to a [`bool`] value.
     fn set_default(mut self, key: GooseDefault, value: bool) -> Result<Box<Self>, GooseError> {
         match key {
@@ -876,7 +880,7 @@ impl GooseDefaultType<bool> for GooseAttack {
                         "set_default(GooseDefault::{:?}, {}) expected &str value, received bool",
                         key, value
                     ),
-                })
+                });
             }
             GooseDefault::Users
             | GooseDefault::StartupTime
@@ -899,7 +903,7 @@ impl GooseDefaultType<bool> for GooseAttack {
                         "set_default(GooseDefault::{:?}, {}) expected usize value, received bool",
                         key, value
                     ),
-                })
+                });
             }
             GooseDefault::RequestFormat
             | GooseDefault::DebugFormat
@@ -929,7 +933,8 @@ impl GooseDefaultType<bool> for GooseAttack {
         Ok(Box::new(self))
     }
 }
-impl GooseDefaultType<GooseCoordinatedOmissionMitigation> for GooseAttack {
+
+impl<G: Goose> GooseDefaultType<GooseCoordinatedOmissionMitigation> for GooseAttack<G> {
     /// Sets [`GooseDefault`] to a [`GooseCoordinatedOmissionMitigation`] value.
     fn set_default(
         mut self,
@@ -964,7 +969,7 @@ impl GooseDefaultType<GooseCoordinatedOmissionMitigation> for GooseAttack {
                         "set_default(GooseDefault::{:?}, {:?}) expected bool value, received GooseCoordinatedOmissionMitigation",
                         key, value
                     ),
-                })
+                });
             }
             // Otherwise display a helpful and explicit error.
             GooseDefault::DebugLog
@@ -990,7 +995,7 @@ impl GooseDefaultType<GooseCoordinatedOmissionMitigation> for GooseAttack {
                         "set_default(GooseDefault::{:?}, {:?}) expected &str value, received GooseCoordinatedOmissionMitigation",
                         key, value
                     ),
-                })
+                });
             }
             GooseDefault::Users
             | GooseDefault::StartupTime
@@ -1013,7 +1018,7 @@ impl GooseDefaultType<GooseCoordinatedOmissionMitigation> for GooseAttack {
                         "set_default(GooseDefault::{:?}, {:?}) expected usize value, received GooseCoordinatedOmissionMitigation",
                         key, value
                     ),
-                })
+                });
             }
             GooseDefault::RequestFormat
             | GooseDefault::DebugFormat
@@ -1027,13 +1032,14 @@ impl GooseDefaultType<GooseCoordinatedOmissionMitigation> for GooseAttack {
                         "set_default(GooseDefault::{:?}, {:?}) expected GooseLogFormat value, received GooseCoordinatedOmissionMitigation",
                         key, value
                     ),
-                })
+                });
             }
         }
         Ok(Box::new(self))
     }
 }
-impl GooseDefaultType<GooseLogFormat> for GooseAttack {
+
+impl<G: Goose> GooseDefaultType<GooseLogFormat> for GooseAttack<G> {
     /// Sets [`GooseDefault`] to a [`GooseLogFormat`] value.
     fn set_default(
         mut self,
@@ -1072,7 +1078,7 @@ impl GooseDefaultType<GooseLogFormat> for GooseAttack {
                         "set_default(GooseDefault::{:?}, {:?}) expected bool value, received GooseCoordinatedOmissionMitigation",
                         key, value
                     ),
-                })
+                });
             }
             // Otherwise display a helpful and explicit error.
             GooseDefault::DebugLog
@@ -1098,7 +1104,7 @@ impl GooseDefaultType<GooseLogFormat> for GooseAttack {
                         "set_default(GooseDefault::{:?}, {:?}) expected &str value, received GooseCoordinatedOmissionMitigation",
                         key, value
                     ),
-                })
+                });
             }
             GooseDefault::Users
             | GooseDefault::StartupTime
@@ -1121,7 +1127,7 @@ impl GooseDefaultType<GooseLogFormat> for GooseAttack {
                         "set_default(GooseDefault::{:?}, {:?}) expected usize value, received GooseCoordinatedOmissionMitigation",
                         key, value
                     ),
-                })
+                });
             }
             GooseDefault::CoordinatedOmissionMitigation => {
                 return Err(GooseError::InvalidOption {
@@ -1131,7 +1137,7 @@ impl GooseDefaultType<GooseLogFormat> for GooseAttack {
                         "set_default(GooseDefault::{:?}, {:?}) expected GooseCoordinatedOmissionMitigation value, received GooseLogFormat",
                         key, value
                     ),
-                })
+                });
             }
         }
         Ok(Box::new(self))
@@ -1172,6 +1178,7 @@ impl GooseConfigure<usize> for GooseConfiguration {
         None
     }
 }
+
 impl GooseConfigure<u16> for GooseConfiguration {
     /// Use [`GooseValue`] to set a [`u16`] value.
     fn get_value(&self, values: Vec<GooseValue<u16>>) -> Option<u16> {
@@ -1190,6 +1197,7 @@ impl GooseConfigure<u16> for GooseConfiguration {
         None
     }
 }
+
 impl GooseConfigure<u8> for GooseConfiguration {
     /// Use [`GooseValue`] to set a [`u8`] value.
     fn get_value(&self, values: Vec<GooseValue<u8>>) -> Option<u8> {
@@ -1208,6 +1216,7 @@ impl GooseConfigure<u8> for GooseConfiguration {
         None
     }
 }
+
 impl GooseConfigure<f32> for GooseConfiguration {
     /// Use [`GooseValue`] to set a [`f32`] value.
     fn get_value(&self, values: Vec<GooseValue<f32>>) -> Option<f32> {
@@ -1226,6 +1235,7 @@ impl GooseConfigure<f32> for GooseConfiguration {
         None
     }
 }
+
 impl GooseConfigure<TestPlan> for GooseConfiguration {
     /// Use [`GooseValue`] to set a vec<(usize, usize)> value.
     fn get_value(&self, values: Vec<GooseValue<TestPlan>>) -> Option<TestPlan> {
@@ -1244,6 +1254,7 @@ impl GooseConfigure<TestPlan> for GooseConfiguration {
         None
     }
 }
+
 impl GooseConfigure<String> for GooseConfiguration {
     /// Use [`GooseValue`] to set a [`String`] value.
     fn get_value(&self, values: Vec<GooseValue<String>>) -> Option<String> {
@@ -1262,6 +1273,7 @@ impl GooseConfigure<String> for GooseConfiguration {
         None
     }
 }
+
 impl GooseConfigure<bool> for GooseConfiguration {
     /// Use [`GooseValue`] to set a [`bool`] value.
     fn get_value(&self, values: Vec<GooseValue<bool>>) -> Option<bool> {
@@ -1280,6 +1292,7 @@ impl GooseConfigure<bool> for GooseConfiguration {
         None
     }
 }
+
 impl GooseConfigure<GooseLogFormat> for GooseConfiguration {
     /// Use [`GooseValue`] to set a [`GooseLogFormat`] value.
     fn get_value(&self, values: Vec<GooseValue<GooseLogFormat>>) -> Option<GooseLogFormat> {
@@ -1298,6 +1311,7 @@ impl GooseConfigure<GooseLogFormat> for GooseConfiguration {
         None
     }
 }
+
 impl GooseConfigure<GooseCoordinatedOmissionMitigation> for GooseConfiguration {
     /// Use [`GooseValue`] to set a [`GooseCoordinatedOmissionMitigation`] value.
     fn get_value(
@@ -1319,6 +1333,7 @@ impl GooseConfigure<GooseCoordinatedOmissionMitigation> for GooseConfiguration {
         None
     }
 }
+
 impl GooseConfigure<Scenarios> for GooseConfiguration {
     /// Use [`GooseValue`] to set a [`Scenarios`] value.
     fn get_value(&self, values: Vec<GooseValue<Scenarios>>) -> Option<Scenarios> {
@@ -2144,7 +2159,7 @@ impl GooseConfiguration {
                     detail: "`configuration.no_debug_body` can not be set on the Manager."
                         .to_string(),
                 });
-            // Can not set `throttle_requests` on Manager.
+                // Can not set `throttle_requests` on Manager.
             } else if self.throttle_requests > 0 {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.throttle_requests`".to_string(),
@@ -2208,7 +2223,7 @@ impl GooseConfiguration {
                     value: self.users.as_ref().unwrap().to_string(),
                     detail: "`configuration.users` can not be set together with the `configuration.worker`.".to_string(),
                 });
-            // Can't set `startup_time` on Worker.
+                // Can't set `startup_time` on Worker.
             } else if self.startup_time != "0" {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.startup_time".to_string(),
@@ -2216,28 +2231,28 @@ impl GooseConfiguration {
                     detail: "`configuration.startup_time` can not be set in Worker mode."
                         .to_string(),
                 });
-            // Can't set `run_time` on Worker.
+                // Can't set `run_time` on Worker.
             } else if self.run_time != "0" {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.run_time".to_string(),
                     value: self.run_time.to_string(),
                     detail: "`configuration.run_time` can not be set in Worker mode.".to_string(),
                 });
-            // Can't set `hatch_rate` on Worker.
+                // Can't set `hatch_rate` on Worker.
             } else if self.hatch_rate.is_some() {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.hatch_rate`".to_string(),
                     value: self.hatch_rate.as_ref().unwrap().to_string(),
                     detail: "`configuration.hatch_rate` can not be set in Worker mode.".to_string(),
                 });
-            // Can't set `timeout` on Worker.
+                // Can't set `timeout` on Worker.
             } else if self.timeout.is_some() {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.timeout`".to_string(),
                     value: self.timeout.as_ref().unwrap().to_string(),
                     detail: "`configuration.timeout` can not be set in Worker mode.".to_string(),
                 });
-            // Can't set `running_metrics` on Worker.
+                // Can't set `running_metrics` on Worker.
             } else if self.running_metrics.is_some() {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.running_metrics".to_string(),
@@ -2245,7 +2260,7 @@ impl GooseConfiguration {
                     detail: "`configuration.running_metrics` can not be set in Worker mode."
                         .to_string(),
                 });
-            // Can't set `no_reset_metrics` on Worker.
+                // Can't set `no_reset_metrics` on Worker.
             } else if self.no_reset_metrics {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.no_reset_metrics".to_string(),
@@ -2253,14 +2268,14 @@ impl GooseConfiguration {
                     detail: "`configuration.no_reset_metrics` can not be set in Worker mode."
                         .to_string(),
                 });
-            // Can't set `no_metrics` on Worker.
+                // Can't set `no_metrics` on Worker.
             } else if self.no_metrics {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.no_metrics".to_string(),
                     value: self.no_metrics.to_string(),
                     detail: "`configuration.no_metrics` can not be set in Worker mode.".to_string(),
                 });
-            // Can't set `no_transaction_metrics` on Worker.
+                // Can't set `no_transaction_metrics` on Worker.
             } else if self.no_transaction_metrics {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.no_transaction_metrics".to_string(),
@@ -2268,7 +2283,7 @@ impl GooseConfiguration {
                     detail: "`configuration.no_transaction_metrics` can not be set in Worker mode."
                         .to_string(),
                 });
-            // Can't set `no_scenario_metrics` on Worker.
+                // Can't set `no_scenario_metrics` on Worker.
             } else if self.no_scenario_metrics {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.no_scenario_metrics".to_string(),
@@ -2276,7 +2291,7 @@ impl GooseConfiguration {
                     detail: "`configuration.no_scenario_metrics` can not be set in Worker mode."
                         .to_string(),
                 });
-            // Can't set `no_print_metrics` on Worker.
+                // Can't set `no_print_metrics` on Worker.
             } else if self.no_print_metrics {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.no_print_metrics".to_string(),
@@ -2284,7 +2299,7 @@ impl GooseConfiguration {
                     detail: "`configuration.no_print_metrics` can not be set in Worker mode."
                         .to_string(),
                 });
-            // Can't set `no_error_summary` on Worker.
+                // Can't set `no_error_summary` on Worker.
             } else if self.no_error_summary {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.no_error_summary".to_string(),
@@ -2292,7 +2307,7 @@ impl GooseConfiguration {
                     detail: "`configuration.no_error_summary` can not be set in Worker mode."
                         .to_string(),
                 });
-            // Can't set `no_status_codes` on Worker.
+                // Can't set `no_status_codes` on Worker.
             } else if self.no_status_codes {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.no_status_codes".to_string(),
@@ -2300,7 +2315,7 @@ impl GooseConfiguration {
                     detail: "`configuration.no_status_codes` can not be set in Worker mode."
                         .to_string(),
                 });
-            // Can't set `no_autostart` on Worker.
+                // Can't set `no_autostart` on Worker.
             } else if self.no_autostart {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.no_autostart`".to_string(),
@@ -2308,7 +2323,7 @@ impl GooseConfiguration {
                     detail: "`configuration.no_autostart` can not be set in Worker mode."
                         .to_string(),
                 });
-            // Can't set `no_gzip` on Worker.
+                // Can't set `no_gzip` on Worker.
             } else if self.no_gzip {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.no_gzip`".to_string(),
@@ -2327,7 +2342,7 @@ impl GooseConfiguration {
                     detail: "`configuration.co_mitigation` can not be set in Worker mode."
                         .to_string(),
                 });
-            // Can't set `manager_bind_host` on Worker.
+                // Can't set `manager_bind_host` on Worker.
             } else if !self.manager_bind_host.is_empty() {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.manager_bind_host`".to_string(),
@@ -2335,7 +2350,7 @@ impl GooseConfiguration {
                     detail: "`configuration.manager_bind_host` can not be set in Worker mode."
                         .to_string(),
                 });
-            // Can't set `manager_bind_port` on Worker.
+                // Can't set `manager_bind_port` on Worker.
             } else if self.manager_bind_port > 0 {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.manager_bind_port`".to_string(),
@@ -2343,7 +2358,7 @@ impl GooseConfiguration {
                     detail: "`configuration.manager_bind_port` can not be set in Worker mode."
                         .to_string(),
                 });
-            // Must set `manager_host` on Worker.
+                // Must set `manager_host` on Worker.
             } else if self.manager_host.is_empty() {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.manager_host`".to_string(),
@@ -2351,7 +2366,7 @@ impl GooseConfiguration {
                     detail: "`configuration.manager_host` must be set when in Worker mode."
                         .to_string(),
                 });
-            // Must set `manager_port` on Worker.
+                // Must set `manager_port` on Worker.
             } else if self.manager_port == 0 {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.manager_port`".to_string(),
@@ -2359,7 +2374,7 @@ impl GooseConfiguration {
                     detail: "`configuration.manager_port` must be set when in Worker mode."
                         .to_string(),
                 });
-            // Can not set `sticky_follow` on Worker.
+                // Can not set `sticky_follow` on Worker.
             } else if self.sticky_follow {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.sticky_follow`".to_string(),
@@ -2367,7 +2382,7 @@ impl GooseConfiguration {
                     detail: "`configuration.sticky_follow` can not be set in Worker mode."
                         .to_string(),
                 });
-            // Can not set `no_hash_check` on Worker.
+                // Can not set `no_hash_check` on Worker.
             } else if self.no_hash_check {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.no_hash_check`".to_string(),
@@ -2472,8 +2487,8 @@ impl GooseConfiguration {
                     option: "`configuration.hatch_rate`".to_string(),
                     value: hatch_rate.to_string(),
                     detail:
-                        "`configuration.hatch_rate` can not be set with `configuration.test_plan`."
-                            .to_string(),
+                    "`configuration.hatch_rate` can not be set with `configuration.test_plan`."
+                        .to_string(),
                 });
             }
             // The --run-time option isn't compatible with --test-plan.
@@ -2482,8 +2497,8 @@ impl GooseConfiguration {
                     option: "`configuration.run_time`".to_string(),
                     value: self.run_time.to_string(),
                     detail:
-                        "`configuration.run_time` can not be set with `configuration.test_plan`."
-                            .to_string(),
+                    "`configuration.run_time` can not be set with `configuration.test_plan`."
+                        .to_string(),
                 });
             }
             // The --no-reset-metrics option isn't compatible with --test-plan.
@@ -2519,8 +2534,8 @@ impl GooseConfiguration {
                     option: "`configuration.run_time`".to_string(),
                     value: self.run_time.to_string(),
                     detail:
-                        "`configuration.run_time` can not be set with `configuration.iterations`."
-                            .to_string(),
+                    "`configuration.run_time` can not be set with `configuration.iterations`."
+                        .to_string(),
                 });
             }
             // The --test-plan option isn't compatible with --iterations.
@@ -2529,8 +2544,8 @@ impl GooseConfiguration {
                     option: "`configuration.iterations`".to_string(),
                     value: self.iterations.to_string(),
                     detail:
-                        "`configuration.iteratoins` can not be set with `configuration.test_plan`."
-                            .to_string(),
+                    "`configuration.iteratoins` can not be set with `configuration.test_plan`."
+                        .to_string(),
                 });
             }
             // The --worker flag isn't compatible with --iterations.
@@ -2561,43 +2576,43 @@ impl GooseConfiguration {
                     value: self.request_log.to_string(),
                     detail: "`configuration.request_log` can not be set with `configuration.no_metrics`.".to_string(),
                 });
-            // Transaction log can't be written if metrics are disabled.
+                // Transaction log can't be written if metrics are disabled.
             } else if !self.transaction_log.is_empty() {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.transaction_log`".to_string(),
                     value: self.transaction_log.to_string(),
                     detail:
-                        "`configuration.transaction_log` can not be set with `configuration.no_metrics`."
-                            .to_string(),
+                    "`configuration.transaction_log` can not be set with `configuration.no_metrics`."
+                        .to_string(),
                 });
-            // Scenario log can't be written if metrics are disabled.
+                // Scenario log can't be written if metrics are disabled.
             } else if !self.scenario_log.is_empty() {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.scenario_log`".to_string(),
                     value: self.scenario_log.to_string(),
                     detail:
-                        "`configuration.scenario_log` can not be set with `configuration.no_metrics`."
-                            .to_string(),
+                    "`configuration.scenario_log` can not be set with `configuration.no_metrics`."
+                        .to_string(),
                 });
-            // Error log can't be written if metrics are disabled.
+                // Error log can't be written if metrics are disabled.
             } else if !self.error_log.is_empty() {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.error_log`".to_string(),
                     value: self.error_log.to_string(),
                     detail:
-                        "`configuration.error_log` can not be set with `configuration.no_metrics`."
-                            .to_string(),
+                    "`configuration.error_log` can not be set with `configuration.no_metrics`."
+                        .to_string(),
                 });
-            // Report file can't be written if metrics are disabled.
+                // Report file can't be written if metrics are disabled.
             } else if !self.report_file.is_empty() {
                 return Err(GooseError::InvalidOption {
                     option: "`configuration.report_file`".to_string(),
                     value: self.report_file.to_string(),
                     detail:
-                        "`configuration.report_file` can not be set with `configuration.no_metrics`."
-                            .to_string(),
+                    "`configuration.report_file` can not be set with `configuration.no_metrics`."
+                        .to_string(),
                 });
-            // Coordinated Omission Mitigation can't be enabled if metrics are disabled.
+                // Coordinated Omission Mitigation can't be enabled if metrics are disabled.
             } else if self.co_mitigation.as_ref().unwrap()
                 != &GooseCoordinatedOmissionMitigation::Disabled
             {
@@ -2615,8 +2630,8 @@ impl GooseConfiguration {
                 option: "`configuration.no_granular_report`".to_string(),
                 value: true.to_string(),
                 detail:
-                    "`configuration.no_granular_report` can not be set without `configuration.report_file`."
-                        .to_string(),
+                "`configuration.no_granular_report` can not be set without `configuration.report_file`."
+                    .to_string(),
             });
         }
 
@@ -2693,7 +2708,7 @@ impl GooseConfiguration {
         // Open the log file if configured.
         let goose_log: Option<PathBuf> = if !self.goose_log.is_empty() {
             Some(PathBuf::from(&self.goose_log))
-        // Otherwise disable the log.
+            // Otherwise disable the log.
         } else {
             None
         };

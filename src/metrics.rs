@@ -11,7 +11,7 @@
 use crate::config::GooseDefaults;
 use crate::goose::{get_base_url, GooseMethod, Scenario};
 use crate::logger::GooseLog;
-use crate::report;
+use crate::{Goose, report};
 use crate::test_plan::{TestPlanHistory, TestPlanStepAction};
 use crate::util;
 #[cfg(feature = "gaggle")]
@@ -85,6 +85,7 @@ pub enum GooseCoordinatedOmissionMitigation {
     /// Completely disable coordinated omission mitigation (default).
     Disabled,
 }
+
 /// Allow `--co-mitigation` from the command line using text variations on supported
 /// `GooseCoordinatedOmissionMitigation`s by implementing [`FromStr`].
 impl FromStr for GooseCoordinatedOmissionMitigation {
@@ -99,7 +100,7 @@ impl FromStr for GooseCoordinatedOmissionMitigation {
             r"(?i)^(minimum|mi|min|mini)$",
             r"(?i)^(disabled|di|dis|disable|none|no)$",
         ])
-        .expect("failed to compile co_mitigation RegexSet");
+            .expect("failed to compile co_mitigation RegexSet");
         let matches = co_mitigation.matches(s);
         if matches.matched(0) {
             Ok(GooseCoordinatedOmissionMitigation::Average)
@@ -114,8 +115,8 @@ impl FromStr for GooseCoordinatedOmissionMitigation {
                 option: format!("GooseCoordinatedOmissionMitigation::{:?}", s),
                 value: s.to_string(),
                 detail:
-                    "Invalid co_mitigation, expected: average, disabled, maximum, median, or minimum"
-                        .to_string(),
+                "Invalid co_mitigation, expected: average, disabled, maximum, median, or minimum"
+                    .to_string(),
             })
         }
     }
@@ -304,6 +305,7 @@ pub struct GooseRawRequest {
     /// The body of the request made, if `--request-body` is enabled.
     pub body: String,
 }
+
 impl GooseRawRequest {
     pub(crate) fn new(
         method: GooseMethod,
@@ -359,6 +361,7 @@ pub struct GooseRequestMetric {
     /// [`GooseUser`](../goose/struct.GooseUser.html) thread.
     pub user_cadence: u64,
 }
+
 impl GooseRequestMetric {
     pub(crate) fn new(raw: GooseRawRequest, name: &str, elapsed: u128, user: usize) -> Self {
         GooseRequestMetric {
@@ -435,6 +438,7 @@ pub struct GooseRequestMetricAggregate {
     /// that all Workers are running the same load test plan.
     pub load_test_hash: u64,
 }
+
 impl GooseRequestMetricAggregate {
     /// Create a new GooseRequestMetricAggregate object.
     pub(crate) fn new(path: &str, method: GooseMethod, load_test_hash: u64) -> Self {
@@ -506,6 +510,7 @@ impl Ord for GooseRequestMetricAggregate {
         (&self.method, &self.path).cmp(&(&other.method, &other.path))
     }
 }
+
 /// Implement partial-ordering for GooseRequestMetricAggregate.
 impl PartialOrd for GooseRequestMetricAggregate {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
@@ -542,6 +547,7 @@ pub struct GooseRequestMetricTimingData {
     /// A count of how many requests have been tracked for this method-path pair.
     pub counter: usize,
 }
+
 impl GooseRequestMetricTimingData {
     /// Create a new GooseRequestMetricAggregate object.
     pub(crate) fn new(metric_data: Option<&GooseRequestMetricTimingData>) -> Self {
@@ -549,7 +555,7 @@ impl GooseRequestMetricTimingData {
         // Simply clone the exiting metric_data.
         if let Some(data) = metric_data {
             data.clone()
-        // Create a new empty metric_data.
+            // Create a new empty metric_data.
         } else {
             GooseRequestMetricTimingData {
                 times: BTreeMap::new(),
@@ -617,6 +623,7 @@ impl GooseRequestMetricTimingData {
         self.times.insert(rounded_time, counter);
     }
 }
+
 /// The per-scenario metrics collected each time a scenario is run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScenarioMetric {
@@ -631,6 +638,7 @@ pub struct ScenarioMetric {
     /// Which GooseUser thread processed the request.
     pub user: usize,
 }
+
 impl ScenarioMetric {
     /// Create a new Scenario metric.
     pub(crate) fn new(
@@ -668,6 +676,7 @@ pub struct TransactionMetric {
     /// Which GooseUser thread processed the request.
     pub user: usize,
 }
+
 impl TransactionMetric {
     /// Create a new TransactionMetric metric.
     pub(crate) fn new(
@@ -727,6 +736,7 @@ pub struct TransactionMetricAggregate {
     /// Total number of times transaction has failed.
     pub fail_count: usize,
 }
+
 impl TransactionMetricAggregate {
     /// Create a new TransactionMetricAggregate.
     pub(crate) fn new(
@@ -800,6 +810,7 @@ impl TransactionMetricAggregate {
         debug!("incremented {} counter: {}", rounded_time, counter);
     }
 }
+
 /// Aggregated per-scenario metrics updated each time a scenario is run.
 ///
 /// [`ScenarioMetric`]s are sent by [`GooseUser`](../goose/struct.GooseUser.html)
@@ -825,6 +836,7 @@ pub struct ScenarioMetricAggregate {
     /// Total number of times scenario has run.
     pub counter: usize,
 }
+
 impl ScenarioMetricAggregate {
     /// Create a new ScenarioMetricAggregate.
     pub(crate) fn new(index: usize, name: &str) -> Self {
@@ -887,6 +899,7 @@ impl ScenarioMetricAggregate {
         debug!("incremented {} counter: {}", rounded_time, counter);
     }
 }
+
 /// All metrics optionally collected during a Goose load test.
 ///
 /// By default, Goose collects metrics during a load test in a `GooseMetrics` object
@@ -1043,12 +1056,13 @@ pub struct GooseMetrics {
     /// Workers, otherwise true.
     pub(crate) display_metrics: bool,
 }
+
 impl GooseMetrics {
     /// Initialize the transaction_metrics vector, and determine which hosts are being
     /// load tested to display when printing metrics.
-    pub(crate) fn initialize_transaction_metrics(
+    pub(crate) fn initialize_transaction_metrics<G: Goose>(
         &mut self,
-        scenarios: &[Scenario],
+        scenarios: &[Scenario<G>],
         config: &GooseConfiguration,
         defaults: &GooseDefaults,
     ) -> Result<(), GooseError> {
@@ -1087,7 +1101,7 @@ impl GooseMetrics {
                             // Determine if there is a default host.
                             defaults.host.clone(),
                         )?
-                        .to_string(),
+                            .to_string(),
                     );
                 }
             }
@@ -1097,9 +1111,9 @@ impl GooseMetrics {
     }
 
     /// Initialize the scenario_metrics vector.
-    pub(crate) fn initialize_scenario_metrics(
+    pub(crate) fn initialize_scenario_metrics<G: Goose>(
         &mut self,
-        scenarios: &[Scenario],
+        scenarios: &[Scenario<G>],
         config: &GooseConfiguration,
     ) {
         if !config.no_metrics && !config.no_scenario_metrics {
@@ -1315,7 +1329,7 @@ impl GooseMetrics {
                                 transaction.scenario_index + 1,
                                 &transaction.scenario_name
                             ),
-                            60
+                            60,
                         ),
                     )?;
                     displayed_scenario = true;
@@ -1336,7 +1350,7 @@ impl GooseMetrics {
                                 transaction.transaction_index + 1,
                                 transaction.transaction_name
                             ),
-                            24
+                            24,
                         ),
                         total_count.to_formatted_string(&Locale::en),
                         fail_and_percent,
@@ -1360,7 +1374,7 @@ impl GooseMetrics {
                                 transaction.transaction_index + 1,
                                 transaction.transaction_name
                             ),
-                            24
+                            24,
                         ),
                         total_count.to_formatted_string(&Locale::en),
                         fail_and_percent,
@@ -1474,7 +1488,7 @@ impl GooseMetrics {
                                 transaction.scenario_index + 1,
                                 &transaction.scenario_name
                             ),
-                            60
+                            60,
                         ),
                     )?;
                     displayed_scenario = true;
@@ -1513,7 +1527,7 @@ impl GooseMetrics {
                             transaction.transaction_index + 1,
                             transaction.transaction_name
                         ),
-                        24
+                        24,
                     ),
                     average,
                     format_number(transaction.min_time),
@@ -1522,7 +1536,7 @@ impl GooseMetrics {
                         &transaction.times,
                         transaction.counter,
                         transaction.min_time,
-                        transaction.max_time
+                        transaction.max_time,
                     )),
                     avg_precision = average_precision,
                 )?;
@@ -1553,7 +1567,7 @@ impl GooseMetrics {
                     &aggregate_transaction_times,
                     aggregate_transaction_time_counter,
                     aggregate_min_transaction_time,
-                    aggregate_max_transaction_time
+                    aggregate_max_transaction_time,
                 )),
                 avg_precision = average_precision,
             )?;
@@ -1598,7 +1612,7 @@ impl GooseMetrics {
             writeln!(
                 fmt,
                 " {:24 } | {:>8} | {:>12} | {:>11.runs_p$} | {:>10.iterations_p$}",
-                util::truncate_string(&format!("{}: {}", scenario.index + 1, &scenario.name,), 24),
+                util::truncate_string(&format!("{}: {}", scenario.index + 1, &scenario.name, ), 24),
                 scenario.users.len(),
                 scenario.counter,
                 runs,
@@ -1698,7 +1712,7 @@ impl GooseMetrics {
                     &scenario.times,
                     scenario.counter,
                     scenario.min_time,
-                    scenario.max_time
+                    scenario.max_time,
                 )),
                 avg_precision = average_precision,
             )?;
@@ -1725,7 +1739,7 @@ impl GooseMetrics {
                     &aggregate_scenario_times,
                     aggregate_scenario_time_counter,
                     aggregate_min_scenario_time,
-                    aggregate_max_scenario_time
+                    aggregate_max_scenario_time,
                 )),
                 avg_precision = average_precision,
             )?;
@@ -1829,7 +1843,7 @@ impl GooseMetrics {
                     &aggregate_raw_times,
                     aggregate_raw_counter,
                     aggregate_raw_min_time,
-                    aggregate_raw_max_time
+                    aggregate_raw_max_time,
                 )),
                 avg_precision = raw_average_precision,
             )?;
@@ -1958,7 +1972,7 @@ impl GooseMetrics {
                     &aggregate_co_times,
                     aggregate_co_counter,
                     aggregate_co_min_time,
-                    aggregate_co_max_time
+                    aggregate_co_max_time,
                 )),
                 avg_precision = co_average_precision,
                 sd_precision = standard_deviation_precision,
@@ -2042,42 +2056,42 @@ impl GooseMetrics {
                     request.raw_data.counter,
                     request.raw_data.minimum_time,
                     request.raw_data.maximum_time,
-                    0.5
+                    0.5,
                 ),
                 calculate_response_time_percentile(
                     &request.raw_data.times,
                     request.raw_data.counter,
                     request.raw_data.minimum_time,
                     request.raw_data.maximum_time,
-                    0.75
+                    0.75,
                 ),
                 calculate_response_time_percentile(
                     &request.raw_data.times,
                     request.raw_data.counter,
                     request.raw_data.minimum_time,
                     request.raw_data.maximum_time,
-                    0.98
+                    0.98,
                 ),
                 calculate_response_time_percentile(
                     &request.raw_data.times,
                     request.raw_data.counter,
                     request.raw_data.minimum_time,
                     request.raw_data.maximum_time,
-                    0.99
+                    0.99,
                 ),
                 calculate_response_time_percentile(
                     &request.raw_data.times,
                     request.raw_data.counter,
                     request.raw_data.minimum_time,
                     request.raw_data.maximum_time,
-                    0.999
+                    0.999,
                 ),
                 calculate_response_time_percentile(
                     &request.raw_data.times,
                     request.raw_data.counter,
                     request.raw_data.minimum_time,
                     request.raw_data.maximum_time,
-                    0.9999
+                    0.9999,
                 ),
             )?;
         }
@@ -2095,42 +2109,42 @@ impl GooseMetrics {
                     raw_aggregate_response_time_counter,
                     raw_aggregate_min_response_time,
                     raw_aggregate_max_response_time,
-                    0.5
+                    0.5,
                 ),
                 calculate_response_time_percentile(
                     &raw_aggregate_response_times,
                     raw_aggregate_response_time_counter,
                     raw_aggregate_min_response_time,
                     raw_aggregate_max_response_time,
-                    0.75
+                    0.75,
                 ),
                 calculate_response_time_percentile(
                     &raw_aggregate_response_times,
                     raw_aggregate_response_time_counter,
                     raw_aggregate_min_response_time,
                     raw_aggregate_max_response_time,
-                    0.98
+                    0.98,
                 ),
                 calculate_response_time_percentile(
                     &raw_aggregate_response_times,
                     raw_aggregate_response_time_counter,
                     raw_aggregate_min_response_time,
                     raw_aggregate_max_response_time,
-                    0.99
+                    0.99,
                 ),
                 calculate_response_time_percentile(
                     &raw_aggregate_response_times,
                     raw_aggregate_response_time_counter,
                     raw_aggregate_min_response_time,
                     raw_aggregate_max_response_time,
-                    0.999
+                    0.999,
                 ),
                 calculate_response_time_percentile(
                     &raw_aggregate_response_times,
                     raw_aggregate_response_time_counter,
                     raw_aggregate_min_response_time,
                     raw_aggregate_max_response_time,
-                    0.9999
+                    0.9999,
                 ),
             )?;
         }
@@ -2200,42 +2214,42 @@ impl GooseMetrics {
                         coordinated_omission_data.counter,
                         coordinated_omission_data.minimum_time,
                         coordinated_omission_data.maximum_time,
-                        0.5
+                        0.5,
                     ),
                     calculate_response_time_percentile(
                         &coordinated_omission_data.times,
                         coordinated_omission_data.counter,
                         coordinated_omission_data.minimum_time,
                         coordinated_omission_data.maximum_time,
-                        0.75
+                        0.75,
                     ),
                     calculate_response_time_percentile(
                         &coordinated_omission_data.times,
                         coordinated_omission_data.counter,
                         coordinated_omission_data.minimum_time,
                         coordinated_omission_data.maximum_time,
-                        0.98
+                        0.98,
                     ),
                     calculate_response_time_percentile(
                         &coordinated_omission_data.times,
                         coordinated_omission_data.counter,
                         coordinated_omission_data.minimum_time,
                         coordinated_omission_data.maximum_time,
-                        0.99
+                        0.99,
                     ),
                     calculate_response_time_percentile(
                         &coordinated_omission_data.times,
                         coordinated_omission_data.counter,
                         coordinated_omission_data.minimum_time,
                         coordinated_omission_data.maximum_time,
-                        0.999
+                        0.999,
                     ),
                     calculate_response_time_percentile(
                         &coordinated_omission_data.times,
                         coordinated_omission_data.counter,
                         coordinated_omission_data.minimum_time,
                         coordinated_omission_data.maximum_time,
-                        0.9999
+                        0.9999,
                     ),
                 )?;
             } else {
@@ -2266,42 +2280,42 @@ impl GooseMetrics {
                     co_aggregate_response_time_counter,
                     co_aggregate_min_response_time,
                     co_aggregate_max_response_time,
-                    0.5
+                    0.5,
                 ),
                 calculate_response_time_percentile(
                     &co_aggregate_response_times,
                     co_aggregate_response_time_counter,
                     co_aggregate_min_response_time,
                     co_aggregate_max_response_time,
-                    0.75
+                    0.75,
                 ),
                 calculate_response_time_percentile(
                     &co_aggregate_response_times,
                     co_aggregate_response_time_counter,
                     co_aggregate_min_response_time,
                     co_aggregate_max_response_time,
-                    0.98
+                    0.98,
                 ),
                 calculate_response_time_percentile(
                     &co_aggregate_response_times,
                     co_aggregate_response_time_counter,
                     co_aggregate_min_response_time,
                     co_aggregate_max_response_time,
-                    0.99
+                    0.99,
                 ),
                 calculate_response_time_percentile(
                     &co_aggregate_response_times,
                     co_aggregate_response_time_counter,
                     co_aggregate_min_response_time,
                     co_aggregate_max_response_time,
-                    0.999
+                    0.999,
                 ),
                 calculate_response_time_percentile(
                     &co_aggregate_response_times,
                     co_aggregate_response_time_counter,
                     co_aggregate_min_response_time,
                     co_aggregate_max_response_time,
-                    0.9999
+                    0.9999,
                 ),
             )?;
         }
@@ -2508,7 +2522,7 @@ impl GooseMetrics {
             _ => {
                 writeln!(fmt, "\n Target hosts: ")?;
                 for host in &self.hosts {
-                    writeln!(fmt, " - {}", host,)?;
+                    writeln!(fmt, " - {}", host, )?;
                 }
             }
         }
@@ -2532,8 +2546,8 @@ impl GooseMetrics {
 impl Serialize for GooseMetrics {
     // GooseMetrics serialization can't be derived because of the started field.
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
+        where
+            S: Serializer,
     {
         let mut s = serializer.serialize_struct("GooseMetrics", 10)?;
         s.serialize_field("hash", &self.hash)?;
@@ -2636,6 +2650,7 @@ pub struct GooseErrorMetricAggregate {
     /// A counter reflecting how many times this error occurred.
     pub occurrences: usize,
 }
+
 impl GooseErrorMetricAggregate {
     pub(crate) fn new(method: GooseMethod, name: String, error: String) -> Self {
         GooseErrorMetricAggregate {
@@ -2647,7 +2662,7 @@ impl GooseErrorMetricAggregate {
     }
 }
 
-impl GooseAttack {
+impl<G: Goose> GooseAttack<G> {
     // If metrics are enabled, synchronize metrics from child threads to the parent. If
     // flush is true all metrics will be received regardless of how long it takes. If
     // flush is false, metrics will only be received for up to 400 ms before exiting to
@@ -2662,9 +2677,9 @@ impl GooseAttack {
             if let Some(running_metrics) = self.configuration.running_metrics {
                 if self.attack_mode != AttackMode::Worker
                     && util::timer_expired(
-                        goose_attack_run_state.running_metrics_timer,
-                        running_metrics,
-                    )
+                    goose_attack_run_state.running_metrics_timer,
+                    running_metrics,
+                )
                 {
                     goose_attack_run_state.running_metrics_timer = std::time::Instant::now();
                     goose_attack_run_state.display_running_metrics = true;
@@ -2874,7 +2889,7 @@ impl GooseAttack {
                                 break;
                             }
                         }
-                    // Otherwise this is an actual request, record it normally.
+                        // Otherwise this is an actual request, record it normally.
                     } else {
                         // Merge the `GooseRequestMetric` into a `GooseRequestMetricAggregate` in
                         // `GooseMetrics.requests`, and write to the requests log if enabled.
@@ -3004,7 +3019,7 @@ impl GooseAttack {
                     option: "--report-file".to_string(),
                     value: self.get_report_file_path().unwrap(),
                     detail: format!("Failed to create report file: {}", e),
-                })
+                });
             }
         };
 
@@ -3026,42 +3041,42 @@ impl GooseAttack {
                     // For maintaining just show the current number of users.
                     TestPlanStepAction::Maintaining => {
                         let _ = write!(steps_overview,
-                            "<tr><td>{:?}</td><td>{}</td><td>{}</td><td>{:02}:{:02}:{:02}</td><td>{}</td></tr>",
-                            step[0].action,
-                            started,
-                            stopped,
-                            hours,
-                            minutes,
-                            seconds,
-                            step[0].users,
+                                       "<tr><td>{:?}</td><td>{}</td><td>{}</td><td>{:02}:{:02}:{:02}</td><td>{}</td></tr>",
+                                       step[0].action,
+                                       started,
+                                       stopped,
+                                       hours,
+                                       minutes,
+                                       seconds,
+                                       step[0].users,
                         );
                     }
                     // For increasing show the current number of users to the new number of users.
                     TestPlanStepAction::Increasing => {
                         let _ = write!(steps_overview,
-                            "<tr><td>{:?}</td><td>{}</td><td>{}</td><td>{:02}:{:02}:{:02}</td><td>{} &rarr; {}</td></tr>",
-                            step[0].action,
-                            started,
-                            stopped,
-                            hours,
-                            minutes,
-                            seconds,
-                            step[0].users,
-                            step[1].users,
+                                       "<tr><td>{:?}</td><td>{}</td><td>{}</td><td>{:02}:{:02}:{:02}</td><td>{} &rarr; {}</td></tr>",
+                                       step[0].action,
+                                       started,
+                                       stopped,
+                                       hours,
+                                       minutes,
+                                       seconds,
+                                       step[0].users,
+                                       step[1].users,
                         );
                     }
                     // For decreasing show the new number of users from the current number of users.
                     TestPlanStepAction::Decreasing | TestPlanStepAction::Canceling => {
                         let _ = write!(steps_overview,
-                            "<tr><td>{:?}</td><td>{}</td><td>{}</td><td>{:02}:{:02}:{:02}</td><td>{} &larr; {}</td></tr>",
-                            step[0].action,
-                            started,
-                            stopped,
-                            hours,
-                            minutes,
-                            seconds,
-                            step[1].users,
-                            step[0].users,
+                                       "<tr><td>{:?}</td><td>{}</td><td>{}</td><td>{:02}:{:02}:{:02}</td><td>{} &larr; {}</td></tr>",
+                                       step[0].action,
+                                       started,
+                                       stopped,
+                                       hours,
+                                       minutes,
+                                       seconds,
+                                       step[1].users,
+                                       step[0].users,
                         );
                     }
                     TestPlanStepAction::Finished => {
@@ -3198,7 +3213,7 @@ impl GooseAttack {
             if co_data {
                 for (request_key, request) in self.metrics.requests.iter().sorted() {
                     if let Some(coordinated_omission_data) =
-                        request.coordinated_omission_data.as_ref()
+                    request.coordinated_omission_data.as_ref()
                     {
                         let method = format!("{}", request.method);
                         // The request_key is "{method} {name}", so by stripping the "{method} "
@@ -3717,7 +3732,7 @@ pub(crate) fn prepare_status_codes(
         }
         if let Some(aggregate_status_code_counts) = aggregate_counts.as_mut() {
             let new_count = if let Some(existing_status_code_count) =
-                aggregate_status_code_counts.get(status_code)
+            aggregate_status_code_counts.get(status_code)
             {
                 *existing_status_code_count + *count
             } else {
