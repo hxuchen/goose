@@ -11,7 +11,7 @@ async fn main() -> Result<(), GooseError> {
                 // This transaction only runs one time when the user first starts.
                 // .register_transaction(transaction!(website_login).set_on_start())
                 // These next two transactions run repeatedly as long as the load test is running.
-                .register_transaction(transaction!(subscribe))
+                .register_transaction(transaction!(submit))
             // .register_transaction(transaction!(authorize))
             // .register_transaction(transaction!(submit))
             // .register_transaction(transaction!(website_about)),
