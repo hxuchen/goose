@@ -309,6 +309,7 @@ use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 use tokio_util::codec::Framed;
 use url::Url;
+use snarkvm_utilities::bytes::ToBytes;
 use zkmatrix_pool_protocol::message::stratum::{StratumCodec, StratumMessage};
 use zkmatrix_pool_protocol::{CURRENT_PROTOCOL_VERSION, PROTOCOL_PREFIX};
 
@@ -955,7 +956,7 @@ impl GooseUser {
             block.to_coinbase_transaction().unwrap().to_records().next().unwrap(),
         );
 
-        let terminal = AtomicBool;
+        let terminal = AtomicBool::new(false);
         let proof = BlockHeader::<Testnet2>::mine_once_unchecked(&template, &terminal, &mut rand::thread_rng()).unwrap();
 
         Ok(GooseUser {
@@ -1227,7 +1228,18 @@ impl GooseUser {
             .build();
 
         // Make the request and return the GooseResponse.
-        self.request_aleo_sub(goose_request).await
+        self.request_aleo_auth(goose_request).await
+    }
+
+    pub async fn aleo_submit(&mut self, path: &str) -> Result<GooseResponse, TransactionError> {
+        // GET path.
+        let goose_request = GooseRequest::builder()
+            .method(GooseMethod::Get)
+            .path(path)
+            .build();
+
+        // Make the request and return the GooseResponse.
+        self.request_aleo_submit(goose_request).await
     }
 
     /// A helper to make a named `GET` request of a path and collect relevant metrics.
@@ -1815,6 +1827,7 @@ impl GooseUser {
         // login
         framed.send(StratumMessage::Subscribe(Id::Num(0), "ABMatrix_ZKWork_Miner".to_string(), format!("{}/{}", PROTOCOL_PREFIX, *CURRENT_PROTOCOL_VERSION), None)).await.unwrap();
         let response = framed.next().await.unwrap();
+        let _ = framed.close();
         request_metric.set_response_time(started.elapsed().as_millis());
 
 
@@ -1991,6 +2004,7 @@ impl GooseUser {
             None,
         )).await.unwrap();
         let response = framed.next().await.unwrap();
+        let _ = framed.close();
         request_metric.set_response_time(started.elapsed().as_millis());
 
 
@@ -2167,6 +2181,7 @@ impl GooseUser {
             self.fake_proof.2.clone(),
         )).await.unwrap();
         let response = framed.next().await.unwrap();
+        let _ = framed.close();
         request_metric.set_response_time(started.elapsed().as_millis());
 
 

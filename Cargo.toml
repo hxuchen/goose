@@ -65,6 +65,10 @@ optional = true
 git = "https://github.com/ABMatrix/snarkVM.git"
 branch = "ABMatrix/testnet3"
 
+[dependencies.snarkvm-utilities]
+git = "https://github.com/ABMatrix/snarkVM.git"
+branch = "ABMatrix/testnet3"
+
 [features]
 default = ["reqwest/default-tls"]
 gaggle = ["nng"]
@@ -81,5 +85,13 @@ rustls = "0.20.6"
 serial_test = "0.9.0"
 
 [[bin]]
-name = "stress-aleo-pool"
-path = "aleo_pool/main.rs"
+name = "subscribe"
+path = "aleo_pool/subscribe.rs"
+
+[[bin]]
+name = "authorize"
+path = "aleo_pool/authorize.rs"
+
+[[bin]]
+name = "submit"
+path = "aleo_pool/submit.rs"
