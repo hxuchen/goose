@@ -286,6 +286,8 @@
 //! WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 //! See the License for the specific language governing permissions and
 //! limitations under the License.
+// #[macro_use]
+// extern crate lazy_static;
 
 use downcast_rs::{impl_downcast, Downcast};
 use http::method::Method;
@@ -915,6 +917,31 @@ pub struct GooseUser {
     fake_proof: (String, String, String),
 }
 
+use lazy_static::lazy_static;
+
+lazy_static!(
+    // Construct the block template.
+    static ref PROOF_INFO: Vec<String> = {
+        let block = Testnet2::genesis_block();
+        let template = BlockTemplate::new(
+                block.previous_block_hash(),
+                block.height(),
+                block.timestamp(),
+                block.difficulty_target(),
+                block.cumulative_weight(),
+                block.previous_ledger_root(),
+                block.transactions().clone(),
+                block.to_coinbase_transaction().unwrap().to_records().next().unwrap(),
+        );
+        let terminal = AtomicBool::new(false);
+        let proof = BlockHeader::<Testnet2>::mine_once_unchecked(&template, &terminal, &mut rand::thread_rng()).unwrap();
+        vec![hex::encode(template.block_height().to_le_bytes()), hex::encode(proof.nonce().to_bytes_le().unwrap()), hex::encode(proof.proof().to_bytes_le().unwrap())]
+    };
+    static ref JOBID: String = PROOF_INFO[0].clone();
+    static ref NONCE: String = PROOF_INFO[1].clone();
+    static ref PROOF: String = PROOF_INFO[2].clone();
+);
+
 impl GooseUser {
     /// Create a new user state.
     pub fn new(
@@ -943,21 +970,6 @@ impl GooseUser {
             .gzip(!configuration.no_gzip)
             .build()?;
 
-        // Construct the block template.
-        let block = Testnet2::genesis_block();
-        let template = BlockTemplate::new(
-            block.previous_block_hash(),
-            block.height(),
-            block.timestamp(),
-            block.difficulty_target(),
-            block.cumulative_weight(),
-            block.previous_ledger_root(),
-            block.transactions().clone(),
-            block.to_coinbase_transaction().unwrap().to_records().next().unwrap(),
-        );
-
-        let terminal = AtomicBool::new(false);
-        let proof = BlockHeader::<Testnet2>::mine_once_unchecked(&template, &terminal, &mut rand::thread_rng()).unwrap();
 
         Ok(GooseUser {
             started: Instant::now(),
@@ -979,7 +991,7 @@ impl GooseUser {
             slept: 0,
             transaction_name: None,
             session_data: None,
-            fake_proof: (hex::encode(template.block_height().to_le_bytes()), hex::encode(proof.nonce().to_bytes_le().unwrap()), hex::encode(proof.proof().to_bytes_le().unwrap())),
+            fake_proof: (JOBID.clone(), NONCE.clone(), PROOF.clone()),
         })
     }
 

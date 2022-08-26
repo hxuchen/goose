@@ -39,6 +39,8 @@
 
 #[macro_use]
 extern crate log;
+#[macro_use]
+extern crate lazy_static;
 
 pub mod config;
 pub mod controller;
@@ -58,7 +60,6 @@ pub mod util;
 mod worker;
 
 use gumdrop::Options;
-use lazy_static::lazy_static;
 #[cfg(feature = "gaggle")]
 use nng::Socket;
 use rand::seq::SliceRandom;
