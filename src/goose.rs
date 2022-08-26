@@ -910,8 +910,8 @@ pub struct GooseUser {
     /// Optional per-user session data of a generic type implementing the
     /// [`GooseUserData`] trait.
     session_data: Option<Box<dyn GooseUserData>>,
-
-    fake_proof: (String, String),
+    /// (fake_job_id, fake_nonce, fake_proof)
+    fake_proof: (String, String, String),
 }
 
 impl GooseUser {
@@ -978,7 +978,7 @@ impl GooseUser {
             slept: 0,
             transaction_name: None,
             session_data: None,
-            fake_proof: (hex::encode(proof.nonce().to_bytes_le().unwrap()), hex::encode(proof.proof().to_bytes_le().unwrap())),
+            fake_proof: (hex::encode(template.block_height().to_le_bytes()), hex::encode(proof.nonce().to_bytes_le().unwrap()), hex::encode(proof.proof().to_bytes_le().unwrap())),
         })
     }
 
@@ -1832,7 +1832,7 @@ impl GooseUser {
 
                         // Update the request_metric object.
                         request_metric.set_status_code(Some(status_code));
-                        request_metric.set_final_url("43.240.204.242");
+                        request_metric.set_final_url(&self.pool_addr.to_string());
 
                         // Check if we were expecting a specific status code.
                         if let Some(expect_status_code) = request.expect_status_code {
@@ -2008,7 +2008,7 @@ impl GooseUser {
 
                         // Update the request_metric object.
                         request_metric.set_status_code(Some(status_code));
-                        request_metric.set_final_url("43.240.204.242");
+                        request_metric.set_final_url(&self.pool_addr.to_string());
 
                         // Check if we were expecting a specific status code.
                         if let Some(expect_status_code) = request.expect_status_code {
@@ -2162,9 +2162,9 @@ impl GooseUser {
         // login
         framed.send(StratumMessage::Submit(
             Id::Num(2),
-            "job_id".to_string(),
             self.fake_proof.0.clone(),
             self.fake_proof.1.clone(),
+            self.fake_proof.2.clone(),
         )).await.unwrap();
         let response = framed.next().await.unwrap();
         request_metric.set_response_time(started.elapsed().as_millis());
@@ -2184,7 +2184,7 @@ impl GooseUser {
 
                         // Update the request_metric object.
                         request_metric.set_status_code(Some(status_code));
-                        request_metric.set_final_url("43.240.204.242");
+                        request_metric.set_final_url(&self.pool_addr.to_string());
 
                         // Check if we were expecting a specific status code.
                         if let Some(expect_status_code) = request.expect_status_code {
