@@ -298,6 +298,7 @@ use std::time::Duration;
 use std::{fmt, str};
 use std::{future::Future, pin::Pin, time::Instant};
 use std::io::Error;
+use std::net::SocketAddr;
 use std::sync::atomic::AtomicBool;
 use futures::{SinkExt, StreamExt};
 use http::StatusCode;
@@ -879,6 +880,7 @@ pub struct GooseUser {
     pub client: Client,
     /// The base URL to prepend to all relative paths.
     pub base_url: Url,
+    pub pool_addr: SocketAddr,
     /// A local copy of the global [`GooseConfiguration`](../struct.GooseConfiguration.html).
     pub config: GooseConfiguration,
     /// Channel to logger.
@@ -956,13 +958,13 @@ impl GooseUser {
         let terminal = AtomicBool;
         let proof = BlockHeader::<Testnet2>::mine_once_unchecked(&template, &terminal, &mut rand::thread_rng()).unwrap();
 
-
         Ok(GooseUser {
             started: Instant::now(),
             iterations: 0,
             scenarios_index,
             client,
             base_url,
+            pool_addr: configuration.pool.parse().unwrap(),
             config: configuration.clone(),
             logger: None,
             throttle: None,
@@ -976,7 +978,7 @@ impl GooseUser {
             slept: 0,
             transaction_name: None,
             session_data: None,
-            fake_proof: (hex::encode(proof.nonce().to_bytes_le().unwrap()), hex::encode(proof.proof().to_bytes_le().unwrap()))
+            fake_proof: (hex::encode(proof.nonce().to_bytes_le().unwrap()), hex::encode(proof.proof().to_bytes_le().unwrap())),
         })
     }
 
@@ -1207,6 +1209,17 @@ impl GooseUser {
     }
 
     pub async fn aleo_sub(&mut self, path: &str) -> Result<GooseResponse, TransactionError> {
+        // GET path.
+        let goose_request = GooseRequest::builder()
+            .method(GooseMethod::Get)
+            .path(path)
+            .build();
+
+        // Make the request and return the GooseResponse.
+        self.request_aleo_sub(goose_request).await
+    }
+
+    pub async fn aleo_authorize(&mut self, path: &str) -> Result<GooseResponse, TransactionError> {
         // GET path.
         let goose_request = GooseRequest::builder()
             .method(GooseMethod::Get)
@@ -1797,16 +1810,361 @@ impl GooseUser {
         // Make the actual request.
         // let response1 = self.client.execute(built_request).await;
         // request_metric.set_response_time(started.elapsed().as_millis());
-        let stream = TcpStream::connect("43.240.204.242:49156").await.unwrap();
+        let stream = TcpStream::connect(self.pool_addr).await.unwrap();
         let mut framed = Framed::new(stream, StratumCodec::default());
         // login
-        framed.send(StratumMessage::Subscribe(Id::Num(0), "stress_account".to_string(), format!("{}/{}", PROTOCOL_PREFIX, *CURRENT_PROTOCOL_VERSION), None)).await.unwrap();
-        let _response = framed.next().await.unwrap();
+        framed.send(StratumMessage::Subscribe(Id::Num(0), "ABMatrix_ZKWork_Miner".to_string(), format!("{}/{}", PROTOCOL_PREFIX, *CURRENT_PROTOCOL_VERSION), None)).await.unwrap();
+        let response = framed.next().await.unwrap();
+        request_metric.set_response_time(started.elapsed().as_millis());
+
+
+        // Determine if the request suceeded or failed.
+        match &response {
+            Ok(r) => {
+                match r {
+                    StratumMessage::Response(_, _, r) => {
+                        let status_code = if r.is_some() {
+                            StatusCode::FORBIDDEN
+                        } else {
+                            StatusCode::OK
+                        };
+                        info!("{:?}: status_code {}", &path, status_code);
+
+                        // Update the request_metric object.
+                        request_metric.set_status_code(Some(status_code));
+                        request_metric.set_final_url("43.240.204.242");
+
+                        // Check if we were expecting a specific status code.
+                        if let Some(expect_status_code) = request.expect_status_code {
+                            // Record a failure if the expected status code was not returned.
+                            if status_code != expect_status_code {
+                                request_metric.success = false;
+                                request_metric.error = format!("{}: {}", status_code, request_name);
+                            }
+                            // Otherwise record a failure if the returned status code was not a success.
+                        } else if !status_code.is_success() {
+                            request_metric.success = false;
+                            request_metric.error = format!("{}: {}", status_code, request_name);
+                        }
+
+                        // Load test user was redirected.
+                        if self.config.sticky_follow && request_metric.raw.url != request_metric.final_url {
+                            let base_url = self.base_url.to_string();
+                            // Check if the URL redirected started with the load test base_url.
+                            if !request_metric.final_url.starts_with(&base_url) {
+                                let redirected_url = Url::parse(&request_metric.final_url)?;
+                                let redirected_base_url =
+                                    redirected_url[..url::Position::BeforePath].to_string();
+                                info!(
+                            "base_url for user {} redirected from {} to {}",
+                            self.weighted_users_index + 1,
+                            &base_url,
+                            &redirected_base_url
+                        );
+                                let _ = self.set_base_url(&redirected_base_url);
+                            }
+                        }
+                    }
+                    _ => {
+                        //todo do not deal with
+                    }
+                }
+            }
+            Err(e) => {
+                // @TODO: what can we learn from a reqwest error?
+                warn!("{:?}: {}", &path, e);
+                request_metric.success = false;
+                request_metric.set_status_code(None);
+                request_metric.error = e.to_string();
+            }
+        };
+
+        // If enabled, track the cadence between each time the same request is made while
+        // this GooseUser is running. If requests are blocked by the upstream server, this
+        // allows Goose to backfill the requests that should have been made based on
+        // cadence statistics.
+        request_metric.user_cadence = self
+            .coordinated_omission_mitigation(&request_metric)
+            .await?;
+
+        // Send a copy of the raw request object to the parent process if
+        // we're tracking metrics.
+        if !self.config.no_metrics {
+            self.send_request_metric_to_parent(request_metric.clone())?;
+        }
+
+        if request.error_on_fail && !request_metric.success {
+            error!("{:?} {}", &path, &request_metric.error);
+            return Err(TransactionError::RequestFailed {
+                raw_request: request_metric,
+            });
+        }
+
+        Ok(GooseResponse::new(request_metric, None))
+    }
+
+    pub async fn request_aleo_auth<'a>(
+        &mut self,
+        mut request: GooseRequest<'_>,
+    ) -> Result<GooseResponse, TransactionError> {
+        // If the RequestBuilder is already defined in the GooseRequest use it.
+        let request_builder = if request.request_builder.is_some() {
+            request.request_builder.take().unwrap()
+            // Otherwise get a new RequestBuilder.
+        } else {
+            self.get_request_builder(&request.method, request.path)?
+        };
+
+        // Determine the name for this request.
+        let request_name = self.get_request_name(&request);
+
+        // If throttle-requests is enabled...
+        if self.is_throttled && self.throttle.is_some() {
+            // ...wait until there's room to add a token to the throttle channel before proceeding.
+            debug!("GooseUser: waiting on throttle");
+            // Will result in TransactionError::RequestCanceled if this fails.
+            self.throttle.clone().unwrap().send_async(true).await?;
+        };
+
+        // Once past the throttle, the request is officially started.
+        let started = Instant::now();
+
+        // Create a Reqwest Request object from the RequestBuilder.
+        let built_request = request_builder.build()?;
+
+        // Get a string version of request path for logging.
+        let path = match Url::parse(built_request.url().as_ref()) {
+            Ok(u) => u.path().to_string(),
+            Err(e) => {
+                error!("failed to parse url: {}", e);
+                "".to_string()
+            }
+        };
+
+        // Grab a copy of any headers set by this request, included in the request log
+        // and the debug log.
+        let mut headers: Vec<String> = Vec::new();
+        for header in built_request.headers() {
+            headers.push(format!("{:?}", header));
+        }
+
+        // If enabled, grab a copy of the request body, included in the request log and
+        // the debug log.
+        let body = if self.config.request_body {
+            // Get a bytes representation of the body, if any.
+            let body_bytes = match built_request.body() {
+                Some(b) => b.as_bytes().unwrap_or(b""),
+                None => b"",
+            };
+            // Convert the bytes into a &str if valid utf8.
+            str::from_utf8(body_bytes).unwrap_or("")
+        } else {
+            ""
+        };
+
+        // Record the complete client request, included in the request log and the debug log.
+        let raw_request = GooseRawRequest::new(
+            goose_method_from_method(built_request.method().clone())?,
+            built_request.url().as_str(),
+            headers,
+            body,
+        );
+
+        // Record information about the request.
+        let mut request_metric = GooseRequestMetric::new(
+            raw_request,
+            request_name,
+            self.started.elapsed().as_millis(),
+            self.weighted_users_index,
+        );
+
+        // Make the actual request.
+        // let response1 = self.client.execute(built_request).await;
+        // request_metric.set_response_time(started.elapsed().as_millis());
+        let stream = TcpStream::connect(self.pool_addr).await.unwrap();
+        let mut framed = Framed::new(stream, StratumCodec::default());
+        // login
         framed.send(StratumMessage::Authorize(
             Id::Num(1),
             "stress_account".to_string(),
             "stress_prover".to_string(),
             None,
+        )).await.unwrap();
+        let response = framed.next().await.unwrap();
+        request_metric.set_response_time(started.elapsed().as_millis());
+
+
+        // Determine if the request suceeded or failed.
+        match &response {
+            Ok(r) => {
+                match r {
+                    StratumMessage::Response(_, _, r) => {
+                        let status_code = if r.is_some() {
+                            StatusCode::FORBIDDEN
+                        } else {
+                            StatusCode::OK
+                        };
+                        info!("{:?}: status_code {}", &path, status_code);
+
+                        // Update the request_metric object.
+                        request_metric.set_status_code(Some(status_code));
+                        request_metric.set_final_url("43.240.204.242");
+
+                        // Check if we were expecting a specific status code.
+                        if let Some(expect_status_code) = request.expect_status_code {
+                            // Record a failure if the expected status code was not returned.
+                            if status_code != expect_status_code {
+                                request_metric.success = false;
+                                request_metric.error = format!("{}: {}", status_code, request_name);
+                            }
+                            // Otherwise record a failure if the returned status code was not a success.
+                        } else if !status_code.is_success() {
+                            request_metric.success = false;
+                            request_metric.error = format!("{}: {}", status_code, request_name);
+                        }
+
+                        // Load test user was redirected.
+                        if self.config.sticky_follow && request_metric.raw.url != request_metric.final_url {
+                            let base_url = self.base_url.to_string();
+                            // Check if the URL redirected started with the load test base_url.
+                            if !request_metric.final_url.starts_with(&base_url) {
+                                let redirected_url = Url::parse(&request_metric.final_url)?;
+                                let redirected_base_url =
+                                    redirected_url[..url::Position::BeforePath].to_string();
+                                info!(
+                            "base_url for user {} redirected from {} to {}",
+                            self.weighted_users_index + 1,
+                            &base_url,
+                            &redirected_base_url
+                        );
+                                let _ = self.set_base_url(&redirected_base_url);
+                            }
+                        }
+                    }
+                    _ => {
+                        //todo do not deal with
+                    }
+                }
+            }
+            Err(e) => {
+                // @TODO: what can we learn from a reqwest error?
+                warn!("{:?}: {}", &path, e);
+                request_metric.success = false;
+                request_metric.set_status_code(None);
+                request_metric.error = e.to_string();
+            }
+        };
+
+        // If enabled, track the cadence between each time the same request is made while
+        // this GooseUser is running. If requests are blocked by the upstream server, this
+        // allows Goose to backfill the requests that should have been made based on
+        // cadence statistics.
+        request_metric.user_cadence = self
+            .coordinated_omission_mitigation(&request_metric)
+            .await?;
+
+        // Send a copy of the raw request object to the parent process if
+        // we're tracking metrics.
+        if !self.config.no_metrics {
+            self.send_request_metric_to_parent(request_metric.clone())?;
+        }
+
+        if request.error_on_fail && !request_metric.success {
+            error!("{:?} {}", &path, &request_metric.error);
+            return Err(TransactionError::RequestFailed {
+                raw_request: request_metric,
+            });
+        }
+
+        Ok(GooseResponse::new(request_metric, None))
+    }
+
+    pub async fn request_aleo_submit<'a>(
+        &mut self,
+        mut request: GooseRequest<'_>,
+    ) -> Result<GooseResponse, TransactionError> {
+        // If the RequestBuilder is already defined in the GooseRequest use it.
+        let request_builder = if request.request_builder.is_some() {
+            request.request_builder.take().unwrap()
+            // Otherwise get a new RequestBuilder.
+        } else {
+            self.get_request_builder(&request.method, request.path)?
+        };
+
+        // Determine the name for this request.
+        let request_name = self.get_request_name(&request);
+
+        // If throttle-requests is enabled...
+        if self.is_throttled && self.throttle.is_some() {
+            // ...wait until there's room to add a token to the throttle channel before proceeding.
+            debug!("GooseUser: waiting on throttle");
+            // Will result in TransactionError::RequestCanceled if this fails.
+            self.throttle.clone().unwrap().send_async(true).await?;
+        };
+
+        // Once past the throttle, the request is officially started.
+        let started = Instant::now();
+
+        // Create a Reqwest Request object from the RequestBuilder.
+        let built_request = request_builder.build()?;
+
+        // Get a string version of request path for logging.
+        let path = match Url::parse(built_request.url().as_ref()) {
+            Ok(u) => u.path().to_string(),
+            Err(e) => {
+                error!("failed to parse url: {}", e);
+                "".to_string()
+            }
+        };
+
+        // Grab a copy of any headers set by this request, included in the request log
+        // and the debug log.
+        let mut headers: Vec<String> = Vec::new();
+        for header in built_request.headers() {
+            headers.push(format!("{:?}", header));
+        }
+
+        // If enabled, grab a copy of the request body, included in the request log and
+        // the debug log.
+        let body = if self.config.request_body {
+            // Get a bytes representation of the body, if any.
+            let body_bytes = match built_request.body() {
+                Some(b) => b.as_bytes().unwrap_or(b""),
+                None => b"",
+            };
+            // Convert the bytes into a &str if valid utf8.
+            str::from_utf8(body_bytes).unwrap_or("")
+        } else {
+            ""
+        };
+
+        // Record the complete client request, included in the request log and the debug log.
+        let raw_request = GooseRawRequest::new(
+            goose_method_from_method(built_request.method().clone())?,
+            built_request.url().as_str(),
+            headers,
+            body,
+        );
+
+        // Record information about the request.
+        let mut request_metric = GooseRequestMetric::new(
+            raw_request,
+            request_name,
+            self.started.elapsed().as_millis(),
+            self.weighted_users_index,
+        );
+
+        // Make the actual request.
+        // let response1 = self.client.execute(built_request).await;
+        // request_metric.set_response_time(started.elapsed().as_millis());
+        let stream = TcpStream::connect(self.pool_addr).await.unwrap();
+        let mut framed = Framed::new(stream, StratumCodec::default());
+        // login
+        framed.send(StratumMessage::Submit(
+            Id::Num(2),
+            "job_id".to_string(),
+            self.fake_proof.0.clone(),
+            self.fake_proof.1.clone(),
         )).await.unwrap();
         let response = framed.next().await.unwrap();
         request_metric.set_response_time(started.elapsed().as_millis());
