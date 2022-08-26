@@ -52,6 +52,8 @@ pub struct GooseConfiguration {
     /// Defines host to load test (ie http://10.21.32.33)
     #[options(short = "H")]
     pub host: String,
+    #[options(short = "P")]
+    pub pool: String,
     /// Sets concurrent users (default: number of CPUs)
     #[options(short = "u")]
     pub users: Option<usize>,

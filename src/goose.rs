@@ -298,9 +298,12 @@ use std::time::Duration;
 use std::{fmt, str};
 use std::{future::Future, pin::Pin, time::Instant};
 use std::io::Error;
+use std::sync::atomic::AtomicBool;
 use futures::{SinkExt, StreamExt};
 use http::StatusCode;
 use json_rpc_types::Id;
+use snarkvm_dpc::{BlockHeader, BlockTemplate, Network};
+use snarkvm_dpc::testnet2::Testnet2;
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 use tokio_util::codec::Framed;
@@ -905,6 +908,8 @@ pub struct GooseUser {
     /// Optional per-user session data of a generic type implementing the
     /// [`GooseUserData`] trait.
     session_data: Option<Box<dyn GooseUserData>>,
+
+    fake_proof: (String, String),
 }
 
 impl GooseUser {
@@ -935,6 +940,23 @@ impl GooseUser {
             .gzip(!configuration.no_gzip)
             .build()?;
 
+        // Construct the block template.
+        let block = Testnet2::genesis_block();
+        let template = BlockTemplate::new(
+            block.previous_block_hash(),
+            block.height(),
+            block.timestamp(),
+            block.difficulty_target(),
+            block.cumulative_weight(),
+            block.previous_ledger_root(),
+            block.transactions().clone(),
+            block.to_coinbase_transaction().unwrap().to_records().next().unwrap(),
+        );
+
+        let terminal = AtomicBool;
+        let proof = BlockHeader::<Testnet2>::mine_once_unchecked(&template, &terminal, &mut rand::thread_rng()).unwrap();
+
+
         Ok(GooseUser {
             started: Instant::now(),
             iterations: 0,
@@ -954,6 +976,7 @@ impl GooseUser {
             slept: 0,
             transaction_name: None,
             session_data: None,
+            fake_proof: (hex::encode(proof.nonce().to_bytes_le().unwrap()), hex::encode(proof.proof().to_bytes_le().unwrap()))
         })
     }
 
@@ -1183,7 +1206,7 @@ impl GooseUser {
         self.request(goose_request).await
     }
 
-    pub async fn get_aleo(&mut self, path: &str) -> Result<GooseResponse, TransactionError> {
+    pub async fn aleo_sub(&mut self, path: &str) -> Result<GooseResponse, TransactionError> {
         // GET path.
         let goose_request = GooseRequest::builder()
             .method(GooseMethod::Get)
@@ -1191,7 +1214,7 @@ impl GooseUser {
             .build();
 
         // Make the request and return the GooseResponse.
-        self.request_aleo(goose_request).await
+        self.request_aleo_sub(goose_request).await
     }
 
     /// A helper to make a named `GET` request of a path and collect relevant metrics.
@@ -1696,7 +1719,7 @@ impl GooseUser {
     }
 
 
-    pub async fn request_aleo<'a>(
+    pub async fn request_aleo_sub<'a>(
         &mut self,
         mut request: GooseRequest<'_>,
     ) -> Result<GooseResponse, TransactionError> {

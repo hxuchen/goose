@@ -52,7 +52,7 @@ async fn website_login(user: &mut GooseUser) -> TransactionResult {
 
 /// A very simple transaction that simply loads the front page.
 async fn website_index(user: &mut GooseUser) -> TransactionResult {
-    let _goose = user.get_aleo("/").await?;
+    let _goose = user.aleo_sub("/").await?;
 
     Ok(())
 }

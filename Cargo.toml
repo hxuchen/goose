@@ -55,10 +55,15 @@ tokio-tungstenite = "0.15"
 tungstenite = "0.15"
 url = "2"
 zkmatrix-pool-protocol = { git = "https://github.com/ABMatrix/zkmatrix-pool-protocol", branch = "0.2.0" }
+hex = "0.4.3"
 
+[dependencies.nng]
+version = "1.0"
+optional = true
 
-# optional dependencies
-nng = { version = "1.0", optional = true }
+[dependencies.snarkvm-dpc]
+git = "https://github.com/ABMatrix/snarkVM.git"
+branch = "ABMatrix/testnet3"
 
 [features]
 default = ["reqwest/default-tls"]
@@ -74,3 +79,7 @@ native-tls = "0.2"
 nix = "0.25.0"
 rustls = "0.20.6"
 serial_test = "0.9.0"
+
+[[bin]]
+name = "stress-aleo-pool"
+path = "aleo_pool/main.rs"
